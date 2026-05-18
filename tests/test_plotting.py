@@ -28,8 +28,10 @@ def test_plot_oma_sweep_returns_axes_and_labels_units() -> None:
     assert isinstance(ax, Axes)
     assert "OMA" in ax.get_xlabel()
     assert "dBm" in ax.get_xlabel()
-    assert ax.get_ylabel() == "BER"
+    assert "BER" in ax.get_ylabel()
+    assert "1e-12" in ax.get_ylabel()
     assert ax.get_yscale() == "log"
+    assert ax.get_ylim()[0] == pytest.approx(1e-12)
     plt.close(ax.figure)
 
 

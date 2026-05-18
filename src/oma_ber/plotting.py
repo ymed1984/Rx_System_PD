@@ -3,6 +3,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.ticker import LogFormatterSciNotation
 
 
 def _require_keys(sweep_results: list[dict], required_keys: set[str]) -> None:
@@ -25,7 +26,12 @@ def plot_oma_sweep(
     sweep_results: list[dict],
     ax: Axes | None = None,
 ) -> Axes:
-    """Plot BER versus OMA in dBm for sweep result dictionaries."""
+    """Plot BER versus OMA in dBm for sweep result dictionaries.
+
+    The BER axis uses a display-only lower limit of 1e-12 so very small BER
+    values do not make the practical receiver region unreadable. Data values
+    are not clipped or modified.
+    """
     _require_keys(sweep_results, {"oma_dbm", "ber"})
     oma_dbm_values = np.array([result["oma_dbm"] for result in sweep_results], dtype=float)
     ber_values = np.array([result["ber"] for result in sweep_results], dtype=float)
@@ -37,8 +43,10 @@ def plot_oma_sweep(
     ax = _get_axes(ax)
     ax.plot(oma_dbm_values, ber_values, marker="o")
     ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(LogFormatterSciNotation())
+    ax.set_ylim(bottom=1e-12)
     ax.set_xlabel("OMA [dBm]")
-    ax.set_ylabel("BER")
+    ax.set_ylabel("BER (axis floor 1e-12)")
     ax.grid(True, which="both", alpha=0.35)
     return ax
 
