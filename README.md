@@ -79,9 +79,10 @@ The receiver noise model is level-dependent:
 
 ```text
 shot noise = sqrt(2 * q * (I + I_dark) * Bn)
+PD thermal noise = sqrt(4 * k_B * T * Bn / Rsh)
 TIA noise = input_current_noise_density * sqrt(Bn)
 RIN noise = Rpd * P * sqrt(RIN_linear * Bn)
-total noise = sqrt(shot^2 + TIA^2 + RIN^2)
+total noise = sqrt(shot^2 + thermal^2 + TIA^2 + RIN^2)
 ```
 
 The BER model assumes two Gaussian current distributions and an electrical decision threshold. For threshold `gamma`:
@@ -108,6 +109,8 @@ Function and field names include units where physical units matter:
 - `er_linear`: extinction ratio as a linear power ratio.
 - `responsivity_a_per_w`: photodiode responsivity in A/W.
 - `dark_current_a`, `i0_a`, `i1_a`, `delta_i_a`, `sigma0_a`, `sigma1_a`: currents or RMS current noise in amperes.
+- `shunt_resistance_ohm`: photodiode shunt resistance in ohms for thermal noise, when provided.
+- `temperature_k`: photodiode temperature in K for thermal noise.
 - `noise_bandwidth_hz`, `bandwidth_3db_hz`: bandwidths in Hz.
 - `input_current_noise_density_a_per_sqrt_hz`: TIA input-referred current noise density in A/sqrt(Hz).
 - `rin_db_per_hz`: relative intensity noise in dB/Hz.

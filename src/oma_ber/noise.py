@@ -7,6 +7,7 @@ from oma_ber.receiver import Receiver
 from oma_ber.units import rin_db_per_hz_to_linear
 
 Q_E = 1.602176634e-19
+K_B = 1.380649e-23
 
 
 def shot_noise_rms_a(current_a: float, dark_current_a: float, bandwidth_hz: float) -> float:
@@ -44,6 +45,29 @@ def tia_noise_rms_a(
         raise ValueError(msg)
 
     return input_noise_density_a_per_sqrt_hz * sqrt(bandwidth_hz)
+
+
+def thermal_noise_rms_a(
+    shunt_resistance_ohm: float,
+    temperature_k: float,
+    bandwidth_hz: float,
+) -> float:
+    """Calculate photodiode shunt-resistance thermal RMS current noise in A.
+
+    shunt_resistance_ohm is in ohms, temperature_k is in kelvin, and
+    bandwidth_hz is the noise bandwidth in Hz.
+    """
+    if shunt_resistance_ohm <= 0:
+        msg = "shunt_resistance_ohm must be positive."
+        raise ValueError(msg)
+    if temperature_k <= 0:
+        msg = "temperature_k must be positive."
+        raise ValueError(msg)
+    if bandwidth_hz <= 0:
+        msg = "bandwidth_hz must be positive."
+        raise ValueError(msg)
+
+    return sqrt(4 * K_B * temperature_k * bandwidth_hz / shunt_resistance_ohm)
 
 
 def rin_noise_rms_a(
@@ -99,5 +123,14 @@ def total_noise_rms_a(
         rin_db_per_hz=rx.rin_db_per_hz,
         bandwidth_hz=rx.noise_bandwidth_hz,
     )
+    sigma_thermal_a = (
+        thermal_noise_rms_a(
+            shunt_resistance_ohm=pd.shunt_resistance_ohm,
+            temperature_k=pd.temperature_k,
+            bandwidth_hz=rx.noise_bandwidth_hz,
+        )
+        if pd.shunt_resistance_ohm is not None
+        else 0.0
+    )
 
-    return sqrt(sigma_shot_a**2 + sigma_tia_a**2 + sigma_rin_a**2)
+    return sqrt(sigma_shot_a**2 + sigma_tia_a**2 + sigma_rin_a**2 + sigma_thermal_a**2)

@@ -3,9 +3,11 @@ from collections.abc import Callable
 import pytest
 
 from oma_ber.noise import (
+    K_B,
     Q_E,
     rin_noise_rms_a,
     shot_noise_rms_a,
+    thermal_noise_rms_a,
     tia_noise_rms_a,
     total_noise_rms_a,
 )
@@ -22,6 +24,8 @@ def test_photodiode_accepts_valid_parameters() -> None:
         saturation_power_w=10e-3,
         return_loss_db=20,
         bias_v=2,
+        shunt_resistance_ohm=10e3,
+        temperature_k=300,
     )
 
     assert pd.responsivity_a_per_w == pytest.approx(0.8)
@@ -37,6 +41,8 @@ def test_photodiode_accepts_valid_parameters() -> None:
         ("saturation_power_w", 0.0, "saturation_power_w must be positive"),
         ("return_loss_db", 0.0, "return_loss_db must be positive"),
         ("bias_v", 0.0, "bias_v must be positive"),
+        ("shunt_resistance_ohm", 0.0, "shunt_resistance_ohm must be positive"),
+        ("temperature_k", 0.0, "temperature_k must be positive"),
     ],
 )
 def test_photodiode_rejects_invalid_physical_inputs(
@@ -124,6 +130,29 @@ def test_tia_noise_matches_equation() -> None:
     )
 
 
+def test_thermal_noise_matches_equation() -> None:
+    shunt_resistance_ohm = 10e3
+    temperature_k = 300
+    bandwidth_hz = 25e9
+    expected = (4 * K_B * temperature_k * bandwidth_hz / shunt_resistance_ohm) ** 0.5
+
+    assert thermal_noise_rms_a(shunt_resistance_ohm, temperature_k, bandwidth_hz) == pytest.approx(expected)
+
+
+def test_thermal_noise_increases_with_temperature_k() -> None:
+    cold_noise_a = thermal_noise_rms_a(10e3, temperature_k=250, bandwidth_hz=25e9)
+    hot_noise_a = thermal_noise_rms_a(10e3, temperature_k=350, bandwidth_hz=25e9)
+
+    assert hot_noise_a > cold_noise_a
+
+
+def test_thermal_noise_decreases_with_shunt_resistance_ohm() -> None:
+    low_resistance_noise_a = thermal_noise_rms_a(5e3, temperature_k=300, bandwidth_hz=25e9)
+    high_resistance_noise_a = thermal_noise_rms_a(20e3, temperature_k=300, bandwidth_hz=25e9)
+
+    assert high_resistance_noise_a < low_resistance_noise_a
+
+
 def test_rin_noise_is_zero_if_rin_db_per_hz_is_none() -> None:
     assert rin_noise_rms_a(0.8, optical_power_w=1e-3, rin_db_per_hz=None, bandwidth_hz=25e9) == 0.0
 
@@ -137,7 +166,7 @@ def test_rin_noise_matches_equation() -> None:
 
 
 def test_total_noise_is_at_least_each_contribution() -> None:
-    pd = Photodiode(responsivity_a_per_w=0.8, dark_current_a=1e-9)
+    pd = Photodiode(responsivity_a_per_w=0.8, dark_current_a=1e-9, shunt_resistance_ohm=10e3)
     rx = Receiver(
         noise_bandwidth_hz=25e9,
         input_current_noise_density_a_per_sqrt_hz=10e-12,
@@ -155,10 +184,16 @@ def test_total_noise_is_at_least_each_contribution() -> None:
         rx.rin_db_per_hz,
         rx.noise_bandwidth_hz,
     )
+    thermal_a = thermal_noise_rms_a(
+        pd.shunt_resistance_ohm,
+        pd.temperature_k,
+        rx.noise_bandwidth_hz,
+    )
 
     assert total_a >= shot_a
     assert total_a >= tia_a
     assert total_a >= rin_a
+    assert total_a >= thermal_a
 
 
 @pytest.mark.parametrize(
@@ -169,6 +204,9 @@ def test_total_noise_is_at_least_each_contribution() -> None:
         (lambda: shot_noise_rms_a(0.0, 0.0, 0.0), "bandwidth_hz must be positive"),
         (lambda: tia_noise_rms_a(-1e-12, 1e9), "input_noise_density_a_per_sqrt_hz must be non-negative"),
         (lambda: tia_noise_rms_a(0.0, 0.0), "bandwidth_hz must be positive"),
+        (lambda: thermal_noise_rms_a(0.0, 300, 1e9), "shunt_resistance_ohm must be positive"),
+        (lambda: thermal_noise_rms_a(10e3, 0.0, 1e9), "temperature_k must be positive"),
+        (lambda: thermal_noise_rms_a(10e3, 300, 0.0), "bandwidth_hz must be positive"),
         (lambda: rin_noise_rms_a(0.0, 1e-3, -150, 1e9), "responsivity_a_per_w must be positive"),
         (lambda: rin_noise_rms_a(0.8, -1e-3, -150, 1e9), "optical_power_w must be non-negative"),
         (lambda: rin_noise_rms_a(0.8, 1e-3, -150, 0.0), "bandwidth_hz must be positive"),
