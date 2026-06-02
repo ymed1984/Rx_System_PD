@@ -9,6 +9,7 @@ from oma_ber.ber import (
     qfunc,
 )
 from oma_ber.bandwidth import apply_oma_penalty_db, bandwidth_penalty_db, first_order_lowpass_mag
+from oma_ber.eye import eye_traces, eye_unit_interval_axis
 from oma_ber.isi import (
     apply_lti_filter,
     first_order_lowpass_impulse_response,
@@ -27,6 +28,7 @@ from oma_ber.noise import (
     total_noise_rms_a,
 )
 from oma_ber.photodiode import Photodiode
+from oma_ber.photodiode import photocurrent_a
 from oma_ber.receiver import Receiver
 from oma_ber.saturation import (
     compressed_responsivity_a_per_w,
@@ -64,6 +66,8 @@ __all__ = [
     "compressed_responsivity_rational_a_per_w",
     "db_to_linear",
     "dbm_to_watt",
+    "eye_traces",
+    "eye_unit_interval_axis",
     "bandwidth_penalty_db",
     "first_order_lowpass_impulse_response",
     "first_order_lowpass_mag",
@@ -74,6 +78,7 @@ __all__ = [
     "nrz_bits_to_levels",
     "optimum_threshold",
     "pd_input_oma_dbm",
+    "photocurrent_a",
     "prbs_bits",
     "q_from_levels",
     "qfunc",

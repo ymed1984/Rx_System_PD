@@ -1,5 +1,6 @@
 """Top-level OMA-to-BER calculations and OMA sweeps."""
 
+from math import log10
 from typing import Any
 
 import numpy as np
@@ -8,7 +9,7 @@ from scipy.optimize import brentq
 from oma_ber.ber import ber_from_gaussian_levels
 from oma_ber.modulation import nrz_levels_from_oma_er
 from oma_ber.noise import total_noise_rms_a
-from oma_ber.photodiode import Photodiode
+from oma_ber.photodiode import Photodiode, photocurrent_a
 from oma_ber.receiver import Receiver
 from oma_ber.units import dbm_to_watt
 
@@ -28,9 +29,14 @@ def calculate_ber_from_oma(
     oma_w = dbm_to_watt(oma_dbm)
     levels = nrz_levels_from_oma_er(oma_w=oma_w, er_db=er_db)
 
-    i0_a = pd.responsivity_a_per_w * levels.p0_w
-    i1_a = pd.responsivity_a_per_w * levels.p1_w
+    i0_linear_a = pd.responsivity_a_per_w * levels.p0_w
+    i1_linear_a = pd.responsivity_a_per_w * levels.p1_w
+    delta_i_linear_a = i1_linear_a - i0_linear_a
+
+    i0_a = photocurrent_a(levels.p0_w, pd)
+    i1_a = photocurrent_a(levels.p1_w, pd)
     delta_i_a = i1_a - i0_a
+    oma_current_compression_db = 20 * log10(delta_i_linear_a / delta_i_a)
 
     sigma0_a = total_noise_rms_a(
         optical_power_w=levels.p0_w,
@@ -59,9 +65,16 @@ def calculate_ber_from_oma(
         "p0_w": levels.p0_w,
         "p1_w": levels.p1_w,
         "pavg_w": levels.pavg_w,
+        "i0_linear_a": i0_linear_a,
+        "i1_linear_a": i1_linear_a,
         "i0_a": i0_a,
         "i1_a": i1_a,
+        "delta_i_linear_a": delta_i_linear_a,
         "delta_i_a": delta_i_a,
+        "responsivity0_effective_a_per_w": i0_a / levels.p0_w,
+        "responsivity1_effective_a_per_w": i1_a / levels.p1_w,
+        "oma_current_compression_db": oma_current_compression_db,
+        "saturation_power_w": pd.saturation_power_w,
         "sigma0_a": sigma0_a,
         "sigma1_a": sigma1_a,
         "threshold_a": ber_result["threshold_a"],

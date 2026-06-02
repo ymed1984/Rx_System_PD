@@ -11,7 +11,7 @@ from oma_ber.noise import (
     tia_noise_rms_a,
     total_noise_rms_a,
 )
-from oma_ber.photodiode import Photodiode
+from oma_ber.photodiode import Photodiode, photocurrent_a
 from oma_ber.receiver import Receiver
 
 
@@ -29,6 +29,29 @@ def test_photodiode_accepts_valid_parameters() -> None:
     )
 
     assert pd.responsivity_a_per_w == pytest.approx(0.8)
+
+
+def test_photocurrent_is_linear_without_saturation_power() -> None:
+    pd = Photodiode(responsivity_a_per_w=0.8, dark_current_a=1e-9)
+
+    assert photocurrent_a(1e-3, pd) == pytest.approx(0.8e-3)
+
+
+def test_photocurrent_uses_tanh_saturation_when_saturation_power_is_provided() -> None:
+    pd = Photodiode(responsivity_a_per_w=0.8, dark_current_a=1e-9, saturation_power_w=1e-3)
+
+    low_power_current_a = photocurrent_a(1e-6, pd)
+    high_power_current_a = photocurrent_a(100e-3, pd)
+
+    assert low_power_current_a == pytest.approx(0.8e-6, rel=1e-3)
+    assert high_power_current_a == pytest.approx(0.8e-3, rel=1e-2)
+
+
+def test_photocurrent_rejects_negative_optical_power() -> None:
+    pd = Photodiode(responsivity_a_per_w=0.8, dark_current_a=1e-9)
+
+    with pytest.raises(ValueError, match="optical_power_w must be non-negative"):
+        photocurrent_a(-1e-6, pd)
 
 
 @pytest.mark.parametrize(

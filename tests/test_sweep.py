@@ -38,9 +38,16 @@ def test_calculate_ber_from_oma_returns_required_keys() -> None:
         "p0_w",
         "p1_w",
         "pavg_w",
+        "i0_linear_a",
+        "i1_linear_a",
         "i0_a",
         "i1_a",
+        "delta_i_linear_a",
         "delta_i_a",
+        "responsivity0_effective_a_per_w",
+        "responsivity1_effective_a_per_w",
+        "oma_current_compression_db",
+        "saturation_power_w",
         "sigma0_a",
         "sigma1_a",
         "threshold_a",
@@ -64,8 +71,57 @@ def test_calculate_ber_from_oma_preserves_units_and_current_delta() -> None:
     assert result["oma_w"] == pytest.approx(dbm_to_watt(-10))
     assert result["i1_a"] - result["i0_a"] == pytest.approx(result["delta_i_a"])
     assert result["delta_i_a"] == pytest.approx(pd.responsivity_a_per_w * result["oma_w"])
+    assert result["delta_i_linear_a"] == pytest.approx(result["delta_i_a"])
+    assert result["oma_current_compression_db"] == pytest.approx(0.0, abs=1e-12)
+    assert result["saturation_power_w"] is None
     assert result["threshold_a"] > result["i0_a"]
     assert result["threshold_a"] < result["i1_a"]
+
+
+def test_calculate_ber_from_oma_applies_tanh_saturation() -> None:
+    linear_pd = example_pd()
+    saturated_pd = Photodiode(
+        responsivity_a_per_w=0.8,
+        dark_current_a=1e-9,
+        bandwidth_3db_hz=40e9,
+        saturation_power_w=1e-4,
+    )
+
+    linear_result = calculate_ber_from_oma(
+        oma_dbm=-5,
+        er_db=6,
+        pd=linear_pd,
+        rx=example_rx(),
+    )
+    saturated_result = calculate_ber_from_oma(
+        oma_dbm=-5,
+        er_db=6,
+        pd=saturated_pd,
+        rx=example_rx(),
+    )
+
+    assert saturated_result["i0_a"] < saturated_result["i0_linear_a"]
+    assert saturated_result["i1_a"] < saturated_result["i1_linear_a"]
+    assert saturated_result["delta_i_a"] < saturated_result["delta_i_linear_a"]
+    assert saturated_result["delta_i_a"] < linear_result["delta_i_a"]
+    assert saturated_result["oma_current_compression_db"] > 0
+    assert saturated_result["saturation_power_w"] == pytest.approx(1e-4)
+
+
+def test_tanh_saturation_limits_oma_improvement_at_high_power() -> None:
+    pd = Photodiode(
+        responsivity_a_per_w=0.8,
+        dark_current_a=1e-9,
+        saturation_power_w=1e-4,
+    )
+    rx = example_rx()
+
+    low_oma = calculate_ber_from_oma(-10, er_db=6, pd=pd, rx=rx)
+    high_oma = calculate_ber_from_oma(0, er_db=6, pd=pd, rx=rx)
+
+    assert high_oma["delta_i_a"] < high_oma["delta_i_linear_a"]
+    assert high_oma["delta_i_a"] < low_oma["delta_i_a"]
+    assert high_oma["oma_current_compression_db"] > low_oma["oma_current_compression_db"]
 
 
 def test_sweep_oma_returns_one_result_per_oma_value() -> None:

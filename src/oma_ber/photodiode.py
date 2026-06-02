@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from oma_ber.saturation import saturated_photocurrent_tanh_a
+
 
 def _validate_optional_positive(value: float | None, name: str) -> None:
     if value is not None and value <= 0:
@@ -46,3 +48,22 @@ class Photodiode:
         _validate_optional_positive(self.return_loss_db, "return_loss_db")
         _validate_optional_positive(self.bias_v, "bias_v")
         _validate_optional_positive(self.shunt_resistance_ohm, "shunt_resistance_ohm")
+
+
+def photocurrent_a(optical_power_w: float, pd: Photodiode) -> float:
+    """Calculate photodiode photocurrent in A from optical power in W.
+
+    If pd.saturation_power_w is provided, a simplified static Ge PD tanh
+    saturation model is used: I = R * Psat * tanh(P / Psat). Otherwise, the
+    linear model I = R * P is used.
+    """
+    if optical_power_w < 0:
+        msg = "optical_power_w must be non-negative."
+        raise ValueError(msg)
+    if pd.saturation_power_w is None:
+        return pd.responsivity_a_per_w * optical_power_w
+    return saturated_photocurrent_tanh_a(
+        optical_power_w=optical_power_w,
+        responsivity_a_per_w=pd.responsivity_a_per_w,
+        saturation_power_w=pd.saturation_power_w,
+    )

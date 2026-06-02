@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from oma_ber.plotting import (
+    plot_eye_diagram,
     plot_oma_sweep,
     plot_q_vs_oma,
     plot_required_oma_vs_responsivity,
@@ -59,6 +60,36 @@ def test_plot_required_oma_vs_responsivity_returns_axes_and_labels_units() -> No
     plt.close(ax.figure)
 
 
+def test_plot_eye_diagram_returns_axes_and_labels_ui_axis() -> None:
+    waveform = np.array([0.0, 0.0, 1.0, 1.0] * 8)
+
+    ax = plot_eye_diagram(waveform, samples_per_symbol=4)
+
+    assert isinstance(ax, Axes)
+    assert "UI" in ax.get_xlabel()
+    assert ax.get_ylabel() == "Amplitude"
+    assert len(ax.lines) > 0
+    plt.close(ax.figure)
+
+
+def test_plot_eye_diagram_accepts_sample_rate_and_metrics() -> None:
+    waveform = np.array([0.0, 0.0, 1.0, 1.0] * 8)
+    metrics = {"min_one_level": 0.8, "max_zero_level": 0.2}
+
+    ax = plot_eye_diagram(
+        waveform,
+        samples_per_symbol=4,
+        sample_rate_hz=100e9,
+        eye_metrics=metrics,
+        ylabel="Optical power [W]",
+    )
+
+    assert "ps" in ax.get_xlabel()
+    assert ax.get_ylabel() == "Optical power [W]"
+    assert len(ax.lines) > 2
+    plt.close(ax.figure)
+
+
 def test_plot_helpers_use_provided_axes() -> None:
     _, ax = plt.subplots()
 
@@ -89,3 +120,18 @@ def test_plot_required_oma_vs_responsivity_rejects_length_mismatch() -> None:
             responsivity_a_per_w_values=np.array([0.6, 0.8]),
             required_oma_dbm_values=np.array([-14.0]),
         )
+
+
+def test_plot_eye_diagram_rejects_invalid_sample_rate() -> None:
+    with pytest.raises(ValueError, match="sample_rate_hz must be positive"):
+        plot_eye_diagram(np.ones(8), samples_per_symbol=4, sample_rate_hz=0.0)
+
+
+def test_plot_eye_diagram_rejects_invalid_max_traces() -> None:
+    with pytest.raises(ValueError, match="max_traces must be positive"):
+        plot_eye_diagram(np.ones(8), samples_per_symbol=4, max_traces=0)
+
+
+def test_plot_eye_diagram_rejects_missing_eye_metric_key() -> None:
+    with pytest.raises(ValueError, match="eye_metrics is missing"):
+        plot_eye_diagram(np.ones(8), samples_per_symbol=4, eye_metrics={"min_one_level": 0.8})
