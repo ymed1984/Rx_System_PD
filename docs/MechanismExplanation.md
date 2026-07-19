@@ -5,9 +5,11 @@
 この資料は、本リポジトリが実装するOMA-to-BER解析の物理モデル、計算順序、
 単位、仮定、適用限界を説明します。
 
-中心となるモデルは、NRZ/OOK信号を対象にした、決定論的なスカラー・ガウス雑音
-モデルです。光OMAと消光比から光レベルを求め、フォトダイオード（PD）の電流へ
-変換し、レベル依存雑音、判定しきい値、Q推定値、BERを計算します。
+中心となるモデルは、NRZ/OOK信号を対象にしたスカラー・ガウス雑音モデルです。
+加えて、物理単位を分離した時間領域経路では、決定論的ISIとPSDベースのガウス
+雑音モーメントをパターン依存Gaussian mixtureとして結合できます。光OMAと消光比
+から光レベルを求め、フォトダイオード（PD）の電流へ変換し、レベル依存雑音、
+判定しきい値、Q推定値、BERを計算します。
 
 ```text
 OMA, ER
@@ -21,9 +23,12 @@ OMA, ER
 帯域ペナルティ、決定論的波形、ISI、アイダイアグラム、周波数応答、リンク
 バジェット、PD飽和の補助モデルもあります。External Laserから受信器までの
 受動リンクは `analyze_laser_to_receiver()` で明示的に接続できます。帯域、ISI、
-周波数応答は、依然としてスカラーBERへ自動的には反映されません。
+周波数応答はスカラーBERへ自動的には反映されませんが、`oma_ber.time_domain` の
+Phase 2ではPD/TIA応答から等価雑音帯域と統計Eyeを計算します。
 
-本ツールは受信器のシステムレベル設計議論を目的とした簡略モデルです。TDECQなどの規格適合性、完全な時間領域統計シミュレーション、デバイス物理シミュレーションを提供するものではありません。
+本ツールは受信器のシステムレベル設計議論を目的とした簡略モデルです。TDECQなど
+の規格適合性、ランダム雑音サンプルを生成するMonte Carlo波形シミュレーション、
+デバイス物理シミュレーションを提供するものではありません。
 
 最適しきい値の導出と数値安定化については、
 [実電流スケールにおけるガウスBER最適しきい値](explanation.md)も参照してください。
@@ -439,6 +444,9 @@ effective_OMA_dBm = OMA_dBm - penalty_dB
 
 ## 10. 決定論的波形、ISI、アイダイアグラム
 
+本章の10.1から10.5は、既存の簡易波形／ISI互換経路を説明します。物理ドメインを
+分離した新しい受信機Eye経路は10.6以降で説明します。
+
 ### 10.1 NRZ波形
 
 波形ヘルパーは0/1ビット列を、指定した低レベル・高レベルの矩形NRZサンプル列へ
@@ -523,6 +531,271 @@ min_one_level - max_zero_level < P1 - P0
 
 となる場合、名目OMAから予想するより有効QとBERが悪化し得ます。現在の決定論的
 ISI指標は、スカラー・ガウスBERへ自動結合されません。
+
+### 10.6 物理ドメインを分離したRX Eye
+
+`oma_ber.time_domain` は、簡易Eye経路とは別に、PD入力から判定点までを次の単位で
+分離します。
+
+```text
+PD入力光パワー P(t) [W]
+  -> PDの静的光電変換 i_raw(t) [A]
+  -> PD電気応答 H_PD(f) [A/A]
+  -> TIAトランスインピーダンス Z_TIA(f) [V/A]
+  -> TIA出力 v(t) [V]
+```
+
+線形PDでは、信号光電流と暗電流を次式で分けます。
+
+```text
+i_signal(t) = Rpd * P(t)
+i_total(t)  = i_signal(t) + Idark
+```
+
+`saturation_power_w` が設定されている場合は、既存の静的tanh圧縮をPD帯域より前に
+適用します。
+
+```text
+i_signal(t) = Rpd * Psat * tanh(P(t) / Psat)
+```
+
+この順序により、飽和後の電流波形をPD/TIAの因果的電気応答へ入力できます。PD帯域
+を光パワーWのまま処理しないため、TIA出力まで進んでも単位を追跡できます。
+
+### 10.7 厳密な時間グリッドとPRBS
+
+`TimeGrid` はシンボルレートと整数samples/UIから時間軸を作ります。
+
+```text
+T_UI = 1 / symbol_rate_baud
+sample_rate_hz = symbol_rate_baud * samples_per_symbol
+dt = 1 / sample_rate_hz
+```
+
+従来ヘルパーのように `sample_rate_hz / symbol_rate_baud` を丸めません。新経路の
+`prbs_bits()` はPRBS7、PRBS9、PRBS15、PRBS31の多項式を使います。従来のseed付き
+乱数ヘルパーは互換経路の再現可能な例示用として残します。
+
+### 10.8 因果フィルタと初期過渡
+
+PDとTIAは、分子・分母係数、サンプルレート、応答種別を保持する
+`DiscreteTransferFunction` で表します。
+
+```text
+response_kind = "dimensionless"       # PD電流応答 A/A
+response_kind = "transimpedance_ohm"  # TIA応答 V/A
+```
+
+1次LPFはprewarp付き双一次変換を使い、離散時間上の指定周波数で3 dBとなるように
+します。複数段フィルタでは、各段の極から求めた整定サンプル数を加算し、評価ビット
+列の周期的な直前パターンをwarm-upとして与えます。warm-up部分はEye評価前に除外
+されるため、ゼロ初期状態を最悪レベルへ混入させません。
+
+### 10.9 クロック位相と判定中心Eye
+
+ビットkのサンプル時刻は次式です。
+
+```text
+t_sample(k) = k * T_UI + sampling_phase_ui * T_UI + decision_delay_s
+```
+
+非整数サンプル位置は線形補間します。`decision_delay_s` はチャネル全体遅延とビット
+ラベルの対応、`sampling_phase_ui` は1 UI内の判定位相を表すため、両者を混同しません。
+
+各位相で決定論的開口を計算します。正極性では、
+
+```text
+eye_opening(phi) = min(one(phi)) - max(zero(phi))
+```
+
+反転TIAでは、
+
+```text
+eye_opening(phi) = min(zero(phi)) - max(one(phi))
+```
+
+です。実装は平均レベルから極性を判定し、最大開口位相を選びます。同値位相が複数
+ある場合は0.5 UIに最も近い位相を選びます。表示トレースは判定時刻を0 UIとして
+`-1 UI` から `+1 UI` まで切り出し、2 UI終端を含みます。
+
+これはISIだけを考えた最適位相です。ランダムジッタ、CDR追従、雑音を含むBER最適
+位相ではありません。
+
+### 10.10 Phase 1とPhase 2の境界
+
+新しいRX EyeのPhase 1に含むものは次のとおりです。
+
+- PD入力P0/P1からの矩形NRZ/OOK光パワー
+- PD responsivity、暗電流DC、静的飽和
+- 因果的なPD/TIA 1次応答または明示的な離散伝達関数
+- PRBS7/9/15/31
+- warm-up、fractional sampling、遅延、正負極性
+- PD電流EyeとTIA電圧Eye
+
+Phase 2で追加した項目は次のとおりです。
+
+- 光電流ショット、暗電流ショット、TIA、PDシャント熱、RINの片側PSD
+- PD/TIA応答からの等価雑音帯域
+- パターン依存分散と隣接サンプル共分散
+- Gaussian-mixture統計Eye密度
+- BERを最小にする電圧しきい値とクロック位相
+
+次の項目はまだ含みません。
+
+- ランダム雑音サンプルを加えたMonte Carlo波形
+- BER等高線、bathtub曲線
+- ランダム／周期ジッタ、CDR
+- 光電界、変調器chirp、AWG複素応答、ファイバ分散
+- WDM beat/crosstalk
+
+したがってPhase 2は、物理単位と処理順を保った解析的なガウス統計RX解析ですが、
+ランダム波形シミュレーションまたは規格適合試験ではありません。
+
+### 10.11 雑音源の発生ノード
+
+`calculate_tia_output_noise()` は、すべての雑音を同じ帯域へ入れず、発生位置に応じた
+伝達関数を使います。
+
+```text
+光電流shot、Idark shot、PDシャント熱、RIN
+  -> H_PD(f) * Z_TIA(f)
+
+TIA入力換算電流雑音
+  -> Z_TIA(f)
+```
+
+各片側入力電流PSDは次式です。
+
+```text
+S_photo(t) = 2 q i_signal(t)                         [A^2/Hz]
+S_dark     = 2 q F_dark I_dark                       [A^2/Hz]
+S_TIA      = i_n^2                                   [A^2/Hz]
+S_RIN(t)   = (Rpd P(t))^2 RIN_linear                 [A^2/Hz]
+S_thermal  = 4 k_B T / R_shunt                       [A^2/Hz]
+```
+
+`I_dark` 自体は0/1の共通DC電流なので理想判定距離を変えませんが、`S_dark` を増やし、
+両レベルのRMS雑音を増加させます。`F_dark=1` はPoisson暗電流、1より大きい値は過剰
+雑音を表します。RINは光パワーに比例する振幅揺らぎなのでPSDは光パワーの2乗に
+比例します。
+
+静的tanh飽和PDでは、小信号RIN変換に局所傾きを使います。
+
+```text
+i(P) = Rpd Psat tanh(P / Psat)
+di/dP = Rpd {1 - tanh^2(P / Psat)}
+S_RIN(t) = {(di/dP) P(t)}^2 RIN_linear
+```
+
+これは飽和したDC電流をそのままRIN振幅とみなすより、入力光揺らぎに対する局所
+小信号応答を表します。ショット雑音は実際の飽和後信号電流 `i_signal(t)` を使います。
+
+### 10.12 離散応答と等価雑音帯域
+
+サンプルレート `fs` の片側白色PSD `S1` を離散白色雑音へ対応させると、Nyquist
+帯域 `0 ... fs/2` に含まれる入力分散は次式です。
+
+```text
+variance_input = S1 * fs / 2
+```
+
+因果インパルス応答 `h[n]` とDC利得 `H(0)` に対する片側等価雑音帯域は、
+
+```text
+Bn = (fs / 2) * sum_n |h[n]|^2 / |H(0)|^2
+```
+
+です。したがって、一定PSDの出力分散は `S1 * Bn * |H(0)|^2` になります。
+Phase 2は実際に指定された離散PD/TIA応答から `pd_tia_noise_bandwidth_hz` と
+`tia_noise_bandwidth_hz` を別々に求めます。スカラーBERのユーザー指定
+`noise_bandwidth_hz` を再利用しません。
+
+理想的な無帯域制限離散応答では `Bn=fs/2` です。連続時間1次LPFの
+`Bn=pi*f3dB/2` は、サンプルレートが帯域より十分高い場合の極限です。有限の
+サンプルレートでは、prewarp付き双一次変換後の離散応答から求めた値を採用します。
+
+### 10.13 パターン依存分散と隣接共分散
+
+ショット雑音とRINのPSDは `P(t)` または `i_signal(t)` に依存します。このため、
+出力分散もビット履歴に依存します。入力白色雑音の時刻mにおける分散を `u[m]`、
+伝達関数のインパルス応答を `h[k]` とすると、
+
+```text
+Var[y[n]] = sum_k h[k]^2 u[n-k]
+Cov[y[n], y[n+1]] = sum_k h[k] h[k+1] u[n-k]
+```
+
+です。実装は評価PRBSを周期的に延長してPSDを畳み込むため、雑音分散の開始過渡を
+Eyeへ混入させません。
+
+非整数サンプル位置を線形補間すると、平均値だけでなく分散も変わります。
+
+```text
+y_phi = (1-alpha) y[n] + alpha y[n+1]
+
+Var[y_phi]
+  = (1-alpha)^2 Var[y[n]]
+    + alpha^2 Var[y[n+1]]
+    + 2 alpha (1-alpha) Cov[y[n], y[n+1]]
+```
+
+共分散項を省くと、ローパス後の強く相関した雑音をfractional samplingした際にRMS
+雑音を過小評価するため、Phase 2ではlag-1共分散も保持します。
+
+### 10.14 Gaussian mixtureとBER
+
+位相 `phi` でサンプルしたビットbの各パターン成分jを、
+
+```text
+V | (b, j, phi) ~ N(mu_bj(phi), sigma_bj(phi)^2)
+```
+
+と近似します。`mu_bj` は決定論的TIA波形、`sigma_bj` はPSD伝搬結果から得ます。
+0/1は各0.5の事前確率、各ビット内の有限パターン成分は等重みです。正極性TIAの
+単一電圧しきい値 `gamma` に対するBERは、
+
+```text
+BER(gamma, phi) = 0.5 * [
+  mean_j Q((gamma - mu_0j(phi)) / sigma_0j(phi))
+  + mean_j Q((mu_1j(phi) - gamma) / sigma_1j(phi))
+]
+```
+
+です。反転TIAは電圧座標の符号を内部で反転して同じ式を使います。実装は広い電圧
+範囲の1025点を評価して大域的な候補を探し、その近傍だけを有界1次元最適化します。
+各位相でしきい値を最適化した後、最小BERの位相を採用します。BERが同値の場合は
+有効Qが大きい位相、さらに0.5 UIへ近い位相を選びます。
+
+有効Q表示値は、各ビット内のガウス雑音とパターン平均値の広がりをまとめた診断値
+です。
+
+```text
+sigma_eff,b^2
+  = mean_j {sigma_bj^2 + (mu_bj - mean_j(mu_bj))^2}
+
+Q_eff = |mean(mu_1j) - mean(mu_0j)| / (sigma_eff,0 + sigma_eff,1)
+```
+
+BERはこのQ近似からではなく、上記Gaussian-mixture BERを直接最小化して求めます。
+
+### 10.15 統計Eye密度と解釈上の制約
+
+`analyze_statistical_tia_eye()` は、各位相で0/1成分の正規密度を足し合わせた
+`density_per_v` [1/V]を返します。`plot_statistical_eye_density()` は1 UIの密度を
+2 UIへ周期表示し、BER最適位相が0 UIとなるよう中心合わせします。
+
+この密度は有限PRBSに対する解析的Gaussian mixtureです。次の効果は含みません。
+
+- 非ガウスな低光子数ショット統計
+- 雑音源間の相関
+- 周波数依存のTIA雑音密度やRIN
+- ジッタと電圧雑音の時間・振幅結合
+- CDR追従、判定器帯域、ヒステリシス、offset
+- 光電界伝搬、分散、chirp、WDM beat/crosstalk
+
+したがって結果は、白色PSD、線形電気応答、ガウス近似の範囲内でのシステム設計
+値です。規格適合性や極低BERの保証にはMonte Carlo、importance sampling、回路／
+光伝搬シミュレーション、実測との比較が別途必要です。
 
 ## 11. 周波数応答／Sパラメータ補助機能
 
@@ -897,6 +1170,7 @@ analyze_laser_to_receiver()
 - 初期感度見積り: スカラーOMA-to-BERモデル
 - 帯域の一次見積り: 1次ローパス・ペナルティ
 - パターン依存性の確認: 波形／ISI／アイ補助機能
+- ISIとガウス雑音の結合: `oma_ber.time_domain` のPhase 2統計Eye
 - 実測または回路応答の確認: 周波数応答CSVからのフィルタリング
 - 高入力検討: 飽和sweepと、BER非単調性の確認
 
@@ -911,9 +1185,10 @@ analyze_laser_to_receiver()
 - 雑音源間の相関は扱わない。
 - PD容量、バイアス、リターンロスは主BERへ自動反映されない。
 - 飽和は静的な経験式であり、動的帯域変化を扱わない。
-- 決定論的ISIとランダム雑音は自動結合されない。
+- スカラーBER経路では決定論的ISIと雑音を自動結合しない。Phase 2統計Eyeは別経路
+  としてISIと解析的ガウス雑音モーメントを結合する。
 - PAM4 BERは実装されていない。
-- 時間領域の統計波形シミュレーションは実装されていない。
+- ランダム雑音サンプルを生成する時間領域Monte Carloは実装されていない。
 - CDR、ジッタ、FEC、符号化利得は扱わない。
 - 規格固有のマスク、TDECQ、コンプライアンス判定は行わない。
 

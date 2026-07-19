@@ -7,11 +7,12 @@
 そのまま数値最適化した場合に生じる精度問題と、本コードベースで採用している
 無次元化した解析的なしきい値計算を扱います。
 
-対象実装は `src/oma_ber/ber.py` の `optimum_threshold()` です。
+対象実装は `src/oma_ber/ber.py` の `optimum_threshold()` と、
+`src/oma_ber/time_domain/statistical.py` のGaussian-mixture最適化です。
 
-このモデルは、単一の電流比較器によるNRZ/OOK判定を想定した簡略化された
-スカラー・ガウスモデルです。時間波形、クロックジッタ、ISI、非ガウス雑音、
-符号間相関などは、このしきい値計算には直接含まれません。
+前半は、単一の電流比較器によるNRZ/OOK判定を想定した簡略化されたスカラー・
+ガウスモデルです。後半では決定論的ISIと解析的ガウス雑音をTIA電圧のGaussian
+mixtureへ拡張します。クロックジッタ、非ガウス雑音、CDRは含みません。
 
 OMAから光レベル、PD電流、各雑音成分へ至るシステム全体の説明は、
 [OMA-to-BER／フォトダイオード受信系の物理モデル](MechanismExplanation.md)を
@@ -438,6 +439,104 @@ vertical_eye_opening = min_one_level - max_zero_level
 この開口をどのように確率分布へ結び付けるかは追加のモデリング判断であり、現在の
 コードは決定論的ISI指標を `optimum_threshold()` へ自動的に合成しません。
 
+### 13.5 物理単位を分離した時間領域RX Eye
+
+`oma_ber.time_domain` のPhase 1は、PD入力P0/P1をW、PD出力をA、TIA出力をVとして
+別々に保持します。PDの静的変換と任意の飽和を先に適用し、その後にPD電気応答と
+TIAトランスインピーダンスを因果フィルタとして適用します。
+
+```text
+P_PD(t) [W]
+  -> i_signal(t) = g_PD(P_PD(t)) [A]
+  -> i_total(t) = i_signal(t) + Idark [A]
+  -> H_PD(f) [A/A]
+  -> Z_TIA(f) [V/A]
+  -> v_RX(t) [V]
+```
+
+位相 `phi` での決定論的開口は、正極性の場合、
+
+```text
+Veye(phi) = min(v_one(phi)) - max(v_zero(phi))
+```
+
+です。反転TIAでは0/1の上下関係を反転して計算します。Phase 1は `Veye(phi)` を最大
+にする位相を求めますが、雑音とジッタを含むBER最適化ではありません。
+
+Phase 2では、パターンごとの平均値と雑音分散を使うGaussian mixtureへ拡張し、
+しきい値と位相をBER基準で最適化します。
+
+### 13.6 Gaussian-mixtureしきい値最適化
+
+位相 `phi` で得られるビットb、パターン成分jのTIA出力を、
+
+```text
+V | (b, j, phi) ~ N(mu_bj(phi), sigma_bj(phi)^2)
+```
+
+とします。`mu_bj` はPD/TIA帯域を通過した決定論的ISI波形、`sigma_bj` は各雑音PSDを
+発生ノードからPD/TIA応答へ通したRMS電圧です。正極性TIAでは、0/1を等確率、各
+ビット内の成分を等重みとしたBERは、
+
+```text
+BER(gamma, phi) = 0.5 * [
+  mean_j Q((gamma - mu_0j(phi)) / sigma_0j(phi))
+  + mean_j Q((mu_1j(phi) - gamma) / sigma_1j(phi))
+]
+```
+
+です。反転TIAでは電圧の符号を反転して同じ問題へ変換します。単一ガウス2成分の
+場合と異なり、Gaussian mixtureの密度は複数回交差し得るため、閉形式の候補だけに
+依存しません。実装は次の順序で大域性と実電圧スケールでの精度を確保します。
+
+1. 全成分平均値を少なくとも最大RMS雑音の8倍まで覆う電圧区間を作る。
+2. Gaussian tailを `log_ndtr`、成分和を `logsumexp` で評価し、BERが浮動小数点で
+   0へunderflowする領域でもlog-BERの順位を保つ。
+3. 1025点の決定論的グリッドでlog-BERの最小近傍を選ぶ。
+4. 選んだグリッド点の両隣を境界として、有界スカラー最適化する。
+5. 最後に元のGaussian-mixture BER式で `threshold_v` とBERを再評価する。公開BER
+   は表現可能範囲を下回ると0になり得るが、しきい値探索自体はlog領域で継続する。
+
+各候補位相で上記しきい値最適化を実行し、BERが最小の位相を選びます。同じBERの
+場合は有効Qが大きい位相、さらに0.5 UIに近い位相を選びます。
+
+```text
+phi_opt = argmin_phi min_gamma BER(gamma, phi)
+```
+
+したがってPhase 1の「決定論的最悪Eye開口を最大にする位相」とPhase 2の
+「Gaussian-mixture BERを最小にする位相」は、一般には一致しません。
+
+### 13.7 fractional samplingでの雑音分散
+
+フィルタ後の隣接サンプル雑音は相関しています。fractional samplingの線形補間係数
+を `alpha` とすると、
+
+```text
+V_phi = (1-alpha) V[n] + alpha V[n+1]
+
+Var[V_phi]
+  = (1-alpha)^2 Var[V[n]]
+    + alpha^2 Var[V[n+1]]
+    + 2 alpha (1-alpha) Cov[V[n], V[n+1]]
+```
+
+です。平均波形だけを補間し、RMS雑音を線形補間する方法は分散演算と一致しません。
+Phase 2はPD/TIAインパルス応答からlag-1共分散を求め、この式で各パターン成分の
+`sigma_bj(phi)` を計算します。
+
+### 13.8 スカラーBERとの使い分け
+
+- `calculate_ber_from_oma()` / `calculate_ber_from_optical_levels()`:
+  メモリレス2レベルとユーザー指定 `noise_bandwidth_hz` による高速な感度解析。
+- `analyze_statistical_tia_eye()`:
+  決定論的ISI、実際の離散PD/TIA応答による等価雑音帯域、パターン依存雑音を結合
+  した電圧しきい値・位相解析。
+
+両経路は同じ近似ではありません。時間領域応答を使った後に、同じ帯域効果を
+スカラーOMAペナルティとして重ねると二重計上になります。Phase 2はランダム雑音
+波形を生成するMonte Carloではなく、有限パターンの解析的Gaussian mixtureです。
+
 ## 14. TX/linkから最適しきい値までの実装データフロー
 
 ### 14.1 RX入力経路
@@ -601,6 +700,17 @@ comparison = compare_photodiodes_at_optical_levels(
 13. 距離とdB/kmから求めたファイバ損失が累積損失へ正しく加算されること。
 14. 複数波長が一意なチャネル名と波長で個別に評価されること。
 
+時間領域Phase 2については次も検証しています。
+
+15. 理想離散応答の等価雑音帯域がNyquist帯域 `fs/2` と一致すること。
+16. 高oversamplingの1次LPFが連続時間値 `pi*f3dB/2` へ収束すること。
+17. 各雑音成分が一定レベルで `PSD * Bn * |gain|^2` と一致すること。
+18. フィルタ後の隣接サンプル共分散がfractional sampling分散へ入ること。
+19. メモリレス単一成分のGaussian mixtureがスカラーBERと一致すること。
+20. 通常BERが0へunderflowする条件でもlog-BER探索が中点しきい値を保つこと。
+21. 統計Eye密度の電圧積分が各位相で1となること。
+22. 選択位相のBERが全候補位相の最小値であること。
+
 ## 16. まとめ
 
 実装全体と、実電流スケールで安定したしきい値を得るための要点は次のとおりです。
@@ -616,6 +726,9 @@ comparison = compare_photodiodes_at_optical_levels(
 - 二次方程式を係数正規化と安定した解の公式で解く。
 - 区間内の全交点と端点を元のBER式で比較する。
 - Q推定BERと、最適しきい値による直接BERを区別する。
+- 雑音源ごとの片側PSDを物理的な発生ノードからPD/TIA応答へ伝搬する。
+- 離散応答から等価雑音帯域、パターン依存分散、隣接共分散を求める。
+- Gaussian-mixture BERをlog領域で比較し、電圧しきい値と位相を最適化する。
 
 この構造により、TX/linkのレベルダイヤとRX単体のPD検証を分離しながら、nA、µA、
 mAの違いに左右されない一貫した正規化しきい値とBERを得られます。

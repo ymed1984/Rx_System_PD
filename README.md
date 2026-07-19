@@ -7,7 +7,8 @@ amplitude (OMA) and extinction ratio (ER) into photodiode current levels,
 level-dependent noise, receiver Q, BER, and required OMA. The main calculation
 is a simplified scalar Gaussian-noise model, with separate helpers for bandwidth
 penalty, deterministic waveform/ISI checks, S-parameter filtering, link budget,
-plotting, and simplified photodiode saturation.
+plotting, simplified photodiode saturation, and a physically separated
+time-domain receiver-eye path with PSD-based Gaussian statistical analysis.
 
 The physical equations and model assumptions are documented separately in
 [MechanismExplanation.md](docs/MechanismExplanation.md). The numerical details
@@ -37,6 +38,16 @@ Additional analysis helpers are available for:
 - First-order bandwidth penalty.
 - Deterministic NRZ/OOK waveform generation.
 - Simple sampled-eye/ISI metrics and deterministic 2 UI eye diagrams.
+- Exact-time-grid receiver eyes with separate PD-input power [W], PD current
+  [A], and TIA voltage [V].
+- Standards-polynomial PRBS7/9/15/31 patterns, causal PD/TIA filters,
+  automatic warm-up, fractional sampling, and clock-centered current/voltage
+  eyes.
+- One-sided PSD propagation for photocurrent shot noise, dark-current shot
+  noise, TIA input-current noise, PD shunt thermal noise, and RIN.
+- Transfer-response-derived equivalent noise bandwidth, pattern-dependent
+  output variance, adjacent-sample covariance, Gaussian-mixture eye density,
+  and BER-based threshold/phase optimization.
 - Frequency-response CSV import and impulse-response conversion.
 - Simplified static photodiode saturation models, including tanh Ge PD saturation.
 - Link-budget OMA at the photodiode input.
@@ -178,6 +189,140 @@ comparison = compare_photodiodes_at_optical_levels(
 This keeps P0/P1 and receiver noise settings identical while changing only
 the photodiode specification.
 
+## Physically Separated RX Eye Example
+
+The new time-domain path starts at the PD optical-input reference plane and
+keeps every physical domain explicit:
+
+```text
+PD-input P0/P1 [W]
+  -> rectangular NRZ/OOK optical power [W]
+  -> static PD conversion and optional saturation [A]
+  -> causal dimensionless PD electrical response [A]
+  -> causal TIA transimpedance response [V/A]
+  -> clock-phase sweep
+  -> decision-centered current and voltage eyes
+```
+
+Run the Phase 1 example:
+
+```bash
+uv run python examples/14_physical_rx_eye.py
+uv run python examples/14_physical_rx_eye.py --save
+```
+
+The main inputs are deliberately separate:
+
+```python
+from oma_ber import Photodiode
+from oma_ber.time_domain import (
+    TimeGrid,
+    analyze_deterministic_eye,
+    first_order_lowpass_transfer,
+    prbs_bits,
+    simulate_pd_tia_waveform,
+)
+
+grid = TimeGrid(symbol_rate_baud=25e9, samples_per_symbol=16)
+bits = prbs_bits(order=7, num_bits=127)
+pd = Photodiode(responsivity_a_per_w=0.8, dark_current_a=1e-9)
+
+pd_response = first_order_lowpass_transfer(
+    sample_rate_hz=grid.sample_rate_hz,
+    bandwidth_3db_hz=14e9,
+    response_kind="dimensionless",
+)
+tia_response = first_order_lowpass_transfer(
+    sample_rate_hz=grid.sample_rate_hz,
+    bandwidth_3db_hz=18e9,
+    dc_gain=1.5e3,
+    response_kind="transimpedance_ohm",
+)
+
+waveforms = simulate_pd_tia_waveform(
+    bits=bits,
+    p0_w=pd_input_p0_w,
+    p1_w=pd_input_p1_w,
+    time_grid=grid,
+    pd=pd,
+    pd_current_response=pd_response,
+    tia_transimpedance_response=tia_response,
+)
+voltage_eye = analyze_deterministic_eye(
+    waveform=waveforms.tia_output_voltage_v,
+    bits=bits,
+    time_grid=grid,
+    amplitude_unit="V",
+)
+```
+
+`TimeGrid` derives `sample_rate_hz = symbol_rate_baud * samples_per_symbol`, so
+the samples/UI ratio is never silently rounded. The filter warm-up is a
+periodic continuation of the analysis pattern and is removed before eye
+measurement. The reported optimum phase maximizes deterministic vertical
+opening; it is not yet a jitter- or CDR-aware optimum.
+
+## Phase 2 Statistical RX Eye and BER
+
+Phase 2 keeps the deterministic signal path above and propagates each
+one-sided noise PSD from its physical generation node:
+
+```text
+photocurrent shot / Idark shot / PD shunt thermal / RIN
+  -> H_PD(f) * Z_TIA(f)
+
+TIA input-referred current noise
+  -> Z_TIA(f)
+
+pattern-conditioned mean and variance
+  -> Gaussian mixture at every sampling phase
+  -> BER-optimum voltage threshold and sampling phase
+```
+
+Run the statistical example:
+
+```bash
+uv run python examples/15_statistical_rx_eye.py
+uv run python examples/15_statistical_rx_eye.py --save
+```
+
+The main Phase 2 inputs are supplied separately from the deterministic PD/TIA
+responses:
+
+```python
+from oma_ber.time_domain import (
+    TimeDomainNoiseModel,
+    analyze_statistical_tia_eye,
+    calculate_tia_output_noise,
+)
+
+noise = calculate_tia_output_noise(
+    waveforms,
+    TimeDomainNoiseModel(
+        tia_input_current_noise_density_a_per_sqrt_hz=10e-12,
+        rin_db_per_hz=-150.0,
+        include_shunt_thermal_noise=True,
+    ),
+)
+statistical_eye = analyze_statistical_tia_eye(waveforms, noise)
+
+print(noise.pd_tia_noise_bandwidth_hz)
+print(noise.tia_noise_bandwidth_hz)
+print(statistical_eye.optimum_result.threshold_v)
+print(statistical_eye.optimum_result.sampling_phase_ui)
+print(statistical_eye.optimum_result.ber)
+```
+
+The PD object already carried by `waveforms` supplies responsivity, dark
+current, dark-current Fano factor, optional shunt resistance, temperature, and
+optional static saturation. The actual discrete PD/TIA responses determine
+the noise bandwidth; the Phase 2 path does not reuse the scalar receiver's
+manually supplied `noise_bandwidth_hz`.
+
+The density is an analytic Gaussian mixture over the finite input pattern. It
+does not synthesize a random noisy waveform and does not include jitter, CDR,
+or optical-field dispersion.
+
 ## Repository Layout
 
 ```text
@@ -200,6 +345,7 @@ src/oma_ber/
   wdm.py            per-wavelength WDM TX/fiber/RX level diagrams
   pd_analysis.py    receiver-boundary photodiode comparisons
   plotting.py       matplotlib plotting helpers
+  time_domain/      physical-unit PD/TIA waveform and statistical-eye path
 ```
 
 ## Units and Naming
@@ -223,6 +369,16 @@ Function and field names include units where physical units matter:
 - `length_km`, `attenuation_db_per_km`: fiber distance and attenuation.
 - `awg_split_loss_db`, `tx_fiber_coupling_loss_db`,
   `rx_fiber_coupling_loss_db`: per-channel optical power losses in dB.
+- `sample_interval_s`, `unit_interval_s`, `decision_delay_s`: time-domain
+  timing coordinates in seconds.
+- `raw_signal_current_a`, `pd_output_current_a`: pre/post-bandwidth PD current
+  waveforms in amperes.
+- `tia_output_voltage_v`: TIA output waveform in volts.
+- `tia_transimpedance_response`: an electrical response with gain in ohms.
+- `pd_tia_noise_bandwidth_hz`, `tia_noise_bandwidth_hz`: equivalent noise
+  bandwidths derived from the discrete responses in Hz.
+- `threshold_v`: BER-optimum TIA-output decision threshold in volts.
+- `sampling_phase_ui`: decision phase within one unit interval.
 
 ## Examples
 
@@ -242,6 +398,8 @@ uv run python examples/10_saturation_sweep.py
 uv run python examples/11_ge_saturation_ber.py
 uv run python examples/12_eye_diagram.py
 uv run python examples/13_tx_link_rx_level_diagram.py
+uv run python examples/14_physical_rx_eye.py
+uv run python examples/15_statistical_rx_eye.py
 ```
 
 Most examples print numerical results. Plotting examples may create figures or
@@ -261,11 +419,17 @@ uv run ruff check .
 ## Limitations
 
 - The main BER calculation assumes scalar Gaussian noise.
-- Time-domain waveform and ISI helpers are deterministic analysis aids, not a
-  full statistical waveform simulator.
+- The `time_domain` Phase 2 path combines deterministic ISI with analytic
+  Gaussian noise moments and mixture BER. It does not generate random noise
+  samples or include jitter, CDR, bathtub curves, BER contours, or
+  standards-specific masks.
+- The older `waveform.py` / `isi.py` eye helpers accept arbitrary amplitude
+  units and remain simplified compatibility aids. New receiver-eye work should
+  use `oma_ber.time_domain` so W, A, and V are not mixed.
 - PAM4 is not implemented.
-- Noise bandwidth is supplied by the user; it is not automatically derived from
-  baud rate.
+- Noise bandwidth is supplied by the user in the scalar BER path. The Phase 2
+  time-domain path instead derives equivalent noise bandwidth from the actual
+  discrete PD/TIA responses; neither path infers it from baud rate alone.
 - Photodiode capacitance, return loss, bias, and 3 dB bandwidth are stored as
   parameters but are not automatically folded into the scalar BER result.
 - If `saturation_power_w` is provided, the scalar BER calculation uses a

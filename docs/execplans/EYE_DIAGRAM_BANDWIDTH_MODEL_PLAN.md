@@ -2,13 +2,45 @@
 
 ## Purpose
 
-This document records a future implementation plan for improving the eye-diagram
-bandwidth model. The current eye-diagram example intentionally uses a
-first-order low-pass filter as a simple engineering model. That model is useful
-for early visualization, but it should remain clearly separated from more
-realistic photodiode or receiver frequency-response modeling.
+This document originally recorded a future implementation plan for improving
+the legacy eye-diagram bandwidth model. Implementation was explicitly requested
+later, and the physical direction changed from filtering an arbitrary-amplitude
+waveform to separating PD-input optical power, PD current, and TIA voltage.
 
-This is a plan only. Do not implement these items until explicitly requested.
+The legacy plan below is retained as design history. New implementation work
+must use `src/oma_ber/time_domain/` and the status update in this document.
+Phase 3以降の実行順序と合格条件は、
+[`EYE_DIAGRAM_PHASE3_AND_LATER_EXECPLAN.md`](EYE_DIAGRAM_PHASE3_AND_LATER_EXECPLAN.md)
+を正本とします。
+
+## Physical-Model Status Update
+
+Phase 1 is now implemented:
+
+- Exact `TimeGrid` with integer samples/UI.
+- Standards-polynomial PRBS7/9/15/31.
+- Optical power [W] -> PD current [A] -> TIA voltage [V].
+- Static PD saturation before electrical bandwidth.
+- Causal PD and TIA transfer functions with automatic periodic warm-up.
+- Fractional sampling and explicit decision delay.
+- Clock-centered current and voltage eyes with polarity handling.
+- `examples/14_physical_rx_eye.py`.
+
+Phase 2 is now implemented:
+
+- One-sided PSDs for photocurrent shot, dark-current shot, TIA input-current,
+  PD shunt thermal, and RIN noise.
+- Noise-source routing through `H_PD*Z_TIA` or `Z_TIA` according to the
+  physical generation node.
+- Equivalent noise bandwidth from the actual discrete impulse response.
+- Pattern-dependent variance and adjacent-sample covariance.
+- Gaussian-mixture statistical eye density and BER.
+- BER-aware voltage-threshold and sampling-phase optimization.
+- `examples/15_statistical_rx_eye.py`.
+
+Random noise waveform synthesis, jitter/CDR, complex optical-field
+propagation, BER contours, and measured-response causality/passivity handling
+remain future phases.
 
 ## Current Status
 
@@ -211,7 +243,7 @@ For higher-order analytic models:
 - First-order mode remains numerically consistent with existing
   `first_order_lowpass_impulse_response`.
 
-## Recommended Near-Term Choice
+## Historical Recommended Near-Term Choice
 
 The next practical step should be an S21-based eye diagram example, not a large
 new model framework. The repository already has the necessary low-level pieces,
@@ -221,6 +253,9 @@ so the future implementation can be small and focused:
 examples/13_sparameter_eye_diagram.py
 ```
 
-That example should demonstrate how to replace the first-order LPF impulse
-response with a measured frequency-response-derived impulse response while
-keeping the same eye plotting and sampled-eye metrics.
+That recommendation has been superseded. PSD-based statistical receiver noise
+and BER-aware phase/threshold analysis are now implemented on top of the
+physical-unit Phase 1 path. A next milestone should be selected explicitly
+between jitter/CDR-aware sampling and measured S-parameter integration. The
+latter must first make response kind, reference impedance, DC extrapolation,
+causality, passivity, and group-delay alignment explicit.
