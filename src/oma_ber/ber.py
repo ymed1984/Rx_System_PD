@@ -1,9 +1,8 @@
 """Gaussian-level BER calculations for receiver current levels."""
 
-from math import sqrt
+from math import copysign, log, sqrt
 
 import numpy as np
-from scipy.optimize import minimize_scalar
 from scipy.special import erfc
 
 
@@ -53,28 +52,65 @@ def ber_for_threshold(
 
 
 def optimum_threshold(mu0_a: float, mu1_a: float, sigma0_a: float, sigma1_a: float) -> float:
-    """Calculate the equal-prior optimum threshold current in amperes (A)."""
+    """Calculate the equal-prior optimum threshold current in amperes (A).
+
+    Stationary thresholds are found from the Gaussian-density intersection
+    equation after normalizing current to the interval between ``mu0_a`` and
+    ``mu1_a``. Evaluating all in-range intersections and both interval
+    endpoints avoids an absolute optimizer tolerance tied to the current scale.
+    """
     _validate_ordered_levels(mu0_a, mu1_a)
     _validate_positive_noise(sigma0_a, sigma1_a)
 
     if sigma0_a == sigma1_a:
         return (mu0_a + mu1_a) / 2
 
-    result = minimize_scalar(
-        lambda threshold_a: ber_for_threshold(
+    level_separation_a = mu1_a - mu0_a
+    separation_over_sigma0 = level_separation_a / sigma0_a
+    separation_over_sigma1 = level_separation_a / sigma1_a
+
+    # With t = (threshold - mu0) / (mu1 - mu0), density equality is
+    # A*t**2 + B*t + C = 0. Normalize the coefficients before deciding
+    # whether the quadratic has numerically degenerated to a linear equation.
+    coefficient_a = separation_over_sigma0**2 - separation_over_sigma1**2
+    coefficient_b = 2 * separation_over_sigma1**2
+    coefficient_c = -separation_over_sigma1**2 - 2 * log(sigma1_a / sigma0_a)
+    coefficient_scale = max(abs(coefficient_a), abs(coefficient_b), abs(coefficient_c))
+    normalized_a = coefficient_a / coefficient_scale
+    normalized_b = coefficient_b / coefficient_scale
+    normalized_c = coefficient_c / coefficient_scale
+
+    normalized_candidates = [0.0, 1.0]
+    degeneracy_tolerance = 32 * np.finfo(float).eps
+    if abs(normalized_a) <= degeneracy_tolerance:
+        if abs(normalized_b) > degeneracy_tolerance:
+            normalized_candidates.append(-normalized_c / normalized_b)
+    else:
+        discriminant = normalized_b**2 - 4 * normalized_a * normalized_c
+        if discriminant >= -degeneracy_tolerance:
+            sqrt_discriminant = sqrt(max(0.0, discriminant))
+            stable_numerator = -0.5 * (
+                normalized_b + copysign(sqrt_discriminant, normalized_b)
+            )
+            normalized_candidates.append(stable_numerator / normalized_a)
+            if stable_numerator != 0:
+                normalized_candidates.append(normalized_c / stable_numerator)
+
+    threshold_candidates_a = [
+        mu0_a + normalized_threshold * level_separation_a
+        for normalized_threshold in normalized_candidates
+        if 0 <= normalized_threshold <= 1
+    ]
+    return min(
+        threshold_candidates_a,
+        key=lambda threshold_a: ber_for_threshold(
             mu0_a,
             mu1_a,
             sigma0_a,
             sigma1_a,
             threshold_a,
         ),
-        bounds=(mu0_a, mu1_a),
-        method="bounded",
     )
-    if not result.success:
-        msg = "failed to find optimum threshold."
-        raise ValueError(msg)
-    return float(result.x)
 
 
 def q_from_levels(mu0_a: float, mu1_a: float, sigma0_a: float, sigma1_a: float) -> float:

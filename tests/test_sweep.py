@@ -42,8 +42,12 @@ def test_calculate_ber_from_oma_returns_required_keys() -> None:
         "i1_linear_a",
         "i0_a",
         "i1_a",
+        "i0_total_a",
+        "i1_total_a",
         "delta_i_linear_a",
         "delta_i_a",
+        "dark_current_a",
+        "dark_current_fano_factor",
         "responsivity0_effective_a_per_w",
         "responsivity1_effective_a_per_w",
         "oma_current_compression_db",
@@ -51,6 +55,7 @@ def test_calculate_ber_from_oma_returns_required_keys() -> None:
         "sigma0_a",
         "sigma1_a",
         "threshold_a",
+        "threshold_total_a",
         "q_rx",
         "ber",
         "ber_from_q",
@@ -76,6 +81,18 @@ def test_calculate_ber_from_oma_preserves_units_and_current_delta() -> None:
     assert result["saturation_power_w"] is None
     assert result["threshold_a"] > result["i0_a"]
     assert result["threshold_a"] < result["i1_a"]
+    assert result["i0_total_a"] == pytest.approx(result["i0_a"] + pd.dark_current_a)
+    assert result["i1_total_a"] == pytest.approx(result["i1_a"] + pd.dark_current_a)
+    assert result["threshold_total_a"] == pytest.approx(
+        result["threshold_a"] + pd.dark_current_a,
+    )
+    assert result["i1_total_a"] - result["i0_total_a"] == pytest.approx(
+        result["delta_i_a"],
+    )
+    assert result["dark_current_a"] == pytest.approx(pd.dark_current_a)
+    assert result["dark_current_fano_factor"] == pytest.approx(1.0)
+    assert result["threshold_total_a"] > result["i0_total_a"]
+    assert result["threshold_total_a"] < result["i1_total_a"]
 
 
 def test_calculate_ber_from_oma_applies_tanh_saturation() -> None:

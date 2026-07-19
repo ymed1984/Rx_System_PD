@@ -18,7 +18,9 @@ class Photodiode:
     responsivity_a_per_w is in A/W, dark_current_a is in A,
     bandwidth_3db_hz is in Hz, capacitance_f is in F,
     saturation_power_w is in W, return_loss_db is in dB, bias_v is in V,
-    shunt_resistance_ohm is in ohms, and temperature_k is in K.
+    shunt_resistance_ohm is in ohms, temperature_k is in K, and
+    dark_current_fano_factor is a positive dimensionless multiplier for the
+    dark-current shot-noise power.
     """
 
     responsivity_a_per_w: float
@@ -30,6 +32,7 @@ class Photodiode:
     bias_v: float | None = None
     shunt_resistance_ohm: float | None = None
     temperature_k: float = 300.0
+    dark_current_fano_factor: float = 1.0
 
     def __post_init__(self) -> None:
         if self.responsivity_a_per_w <= 0:
@@ -40,6 +43,9 @@ class Photodiode:
             raise ValueError(msg)
         if self.temperature_k <= 0:
             msg = "temperature_k must be positive."
+            raise ValueError(msg)
+        if self.dark_current_fano_factor <= 0:
+            msg = "dark_current_fano_factor must be positive."
             raise ValueError(msg)
 
         _validate_optional_positive(self.bandwidth_3db_hz, "bandwidth_3db_hz")

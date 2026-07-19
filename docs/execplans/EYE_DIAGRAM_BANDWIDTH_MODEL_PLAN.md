@@ -189,7 +189,7 @@ Update documentation to make model boundaries explicit:
 Documentation targets:
 
 - `README.md`
-- `MechanismExplanation.md`
+- `docs/MechanismExplanation.md`
 - Example docstrings and printed output.
 
 ## Tests To Add When Implemented

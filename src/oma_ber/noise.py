@@ -10,11 +10,17 @@ Q_E = 1.602176634e-19
 K_B = 1.380649e-23
 
 
-def shot_noise_rms_a(current_a: float, dark_current_a: float, bandwidth_hz: float) -> float:
+def shot_noise_rms_a(
+    current_a: float,
+    dark_current_a: float,
+    bandwidth_hz: float,
+    dark_current_fano_factor: float = 1.0,
+) -> float:
     """Calculate level-dependent shot noise RMS current in amperes (A).
 
     current_a and dark_current_a are currents in A. bandwidth_hz is the
-    noise bandwidth in Hz.
+    noise bandwidth in Hz. dark_current_fano_factor is a positive dimensionless
+    multiplier for dark-current shot-noise power; 1.0 is ideal Poisson noise.
     """
     if current_a < 0:
         msg = "current_a must be non-negative."
@@ -25,8 +31,16 @@ def shot_noise_rms_a(current_a: float, dark_current_a: float, bandwidth_hz: floa
     if bandwidth_hz <= 0:
         msg = "bandwidth_hz must be positive."
         raise ValueError(msg)
+    if dark_current_fano_factor <= 0:
+        msg = "dark_current_fano_factor must be positive."
+        raise ValueError(msg)
 
-    return sqrt(2 * Q_E * (current_a + dark_current_a) * bandwidth_hz)
+    return sqrt(
+        2
+        * Q_E
+        * (current_a + dark_current_fano_factor * dark_current_a)
+        * bandwidth_hz,
+    )
 
 
 def tia_noise_rms_a(
@@ -112,6 +126,7 @@ def total_noise_rms_a(
         current_a=photocurrent_a,
         dark_current_a=pd.dark_current_a,
         bandwidth_hz=rx.noise_bandwidth_hz,
+        dark_current_fano_factor=pd.dark_current_fano_factor,
     )
     sigma_tia_a = tia_noise_rms_a(
         input_noise_density_a_per_sqrt_hz=rx.input_current_noise_density_a_per_sqrt_hz,

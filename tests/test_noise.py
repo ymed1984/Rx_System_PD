@@ -26,9 +26,11 @@ def test_photodiode_accepts_valid_parameters() -> None:
         bias_v=2,
         shunt_resistance_ohm=10e3,
         temperature_k=300,
+        dark_current_fano_factor=1.5,
     )
 
     assert pd.responsivity_a_per_w == pytest.approx(0.8)
+    assert pd.dark_current_fano_factor == pytest.approx(1.5)
 
 
 def test_photocurrent_is_linear_without_saturation_power() -> None:
@@ -66,6 +68,11 @@ def test_photocurrent_rejects_negative_optical_power() -> None:
         ("bias_v", 0.0, "bias_v must be positive"),
         ("shunt_resistance_ohm", 0.0, "shunt_resistance_ohm must be positive"),
         ("temperature_k", 0.0, "temperature_k must be positive"),
+        (
+            "dark_current_fano_factor",
+            0.0,
+            "dark_current_fano_factor must be positive",
+        ),
     ],
 )
 def test_photodiode_rejects_invalid_physical_inputs(
@@ -127,6 +134,44 @@ def test_shot_noise_matches_equation() -> None:
     expected = (2 * Q_E * (current_a + dark_current_a) * bandwidth_hz) ** 0.5
 
     assert shot_noise_rms_a(current_a, dark_current_a, bandwidth_hz) == pytest.approx(expected)
+
+
+def test_shot_noise_applies_fano_factor_only_to_dark_current() -> None:
+    current_a = 1e-6
+    dark_current_a = 2e-6
+    bandwidth_hz = 25e9
+    dark_current_fano_factor = 3.0
+    expected = (
+        2
+        * Q_E
+        * (current_a + dark_current_fano_factor * dark_current_a)
+        * bandwidth_hz
+    ) ** 0.5
+
+    assert shot_noise_rms_a(
+        current_a,
+        dark_current_a,
+        bandwidth_hz,
+        dark_current_fano_factor,
+    ) == pytest.approx(expected)
+
+
+def test_total_noise_increases_with_dark_current_fano_factor() -> None:
+    ideal_pd = Photodiode(responsivity_a_per_w=0.8, dark_current_a=1e-6)
+    excess_noise_pd = Photodiode(
+        responsivity_a_per_w=0.8,
+        dark_current_a=1e-6,
+        dark_current_fano_factor=4.0,
+    )
+    rx = Receiver(
+        noise_bandwidth_hz=25e9,
+        input_current_noise_density_a_per_sqrt_hz=0.0,
+    )
+
+    ideal_noise_a = total_noise_rms_a(0.0, 0.0, ideal_pd, rx)
+    excess_noise_a = total_noise_rms_a(0.0, 0.0, excess_noise_pd, rx)
+
+    assert excess_noise_a == pytest.approx(2 * ideal_noise_a)
 
 
 def test_shot_noise_increases_with_current_a() -> None:
@@ -225,6 +270,10 @@ def test_total_noise_is_at_least_each_contribution() -> None:
         (lambda: shot_noise_rms_a(-1e-9, 0.0, 1e9), "current_a must be non-negative"),
         (lambda: shot_noise_rms_a(0.0, -1e-9, 1e9), "dark_current_a must be non-negative"),
         (lambda: shot_noise_rms_a(0.0, 0.0, 0.0), "bandwidth_hz must be positive"),
+        (
+            lambda: shot_noise_rms_a(0.0, 0.0, 1e9, 0.0),
+            "dark_current_fano_factor must be positive",
+        ),
         (lambda: tia_noise_rms_a(-1e-12, 1e9), "input_noise_density_a_per_sqrt_hz must be non-negative"),
         (lambda: tia_noise_rms_a(0.0, 0.0), "bandwidth_hz must be positive"),
         (lambda: thermal_noise_rms_a(0.0, 300, 1e9), "shunt_resistance_ohm must be positive"),

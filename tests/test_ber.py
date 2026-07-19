@@ -89,6 +89,66 @@ def test_optimum_threshold_handles_large_unequal_noise() -> None:
     assert 0.0 <= threshold_a <= 1.0
 
 
+def test_optimum_threshold_is_accurate_at_microamp_scale() -> None:
+    threshold_a = optimum_threshold(
+        mu0_a=0.0,
+        mu1_a=1e-6,
+        sigma0_a=1e-7,
+        sigma1_a=2e-7,
+    )
+
+    assert threshold_a == pytest.approx(3.470550625549095e-7, rel=1e-12)
+
+
+@pytest.mark.parametrize("current_scale", [1e-6, 1e-3, 1.0, 1e3])
+def test_optimum_threshold_is_invariant_to_current_scale(current_scale: float) -> None:
+    mu0 = 1.0 * current_scale
+    mu1 = 1.1 * current_scale
+    sigma0 = 0.01 * current_scale
+    sigma1 = 0.03 * current_scale
+
+    threshold = optimum_threshold(mu0, mu1, sigma0, sigma1)
+    normalized_threshold = (threshold - mu0) / (mu1 - mu0)
+
+    assert normalized_threshold == pytest.approx(0.281624859661866, rel=1e-12)
+
+
+def test_optimum_threshold_matches_dimensionless_reference_search() -> None:
+    mu0_a = 2.5e-9
+    mu1_a = 9.5e-9
+    sigma0_a = 0.4e-9
+    sigma1_a = 1.7e-9
+    normalized_grid = np.linspace(0.0, 1.0, 1_000_001)
+    threshold_grid_a = mu0_a + normalized_grid * (mu1_a - mu0_a)
+    reference_bers = 0.5 * (
+        qfunc((threshold_grid_a - mu0_a) / sigma0_a)
+        + qfunc((mu1_a - threshold_grid_a) / sigma1_a)
+    )
+    reference_threshold_a = threshold_grid_a[np.argmin(reference_bers)]
+
+    threshold_a = optimum_threshold(mu0_a, mu1_a, sigma0_a, sigma1_a)
+
+    grid_step_a = threshold_grid_a[1] - threshold_grid_a[0]
+    assert threshold_a == pytest.approx(reference_threshold_a, abs=grid_step_a)
+
+
+def test_optimum_threshold_ber_is_no_worse_than_midpoint_for_extreme_noise_ratio() -> None:
+    mu0_a = 0.0
+    mu1_a = 1e-6
+    sigma0_a = 5e-6
+    sigma1_a = 0.1e-6
+    threshold_a = optimum_threshold(mu0_a, mu1_a, sigma0_a, sigma1_a)
+    midpoint_a = (mu0_a + mu1_a) / 2
+
+    assert ber_for_threshold(mu0_a, mu1_a, sigma0_a, sigma1_a, threshold_a) <= ber_for_threshold(
+        mu0_a,
+        mu1_a,
+        sigma0_a,
+        sigma1_a,
+        midpoint_a,
+    )
+
+
 def test_equal_noise_optimum_threshold_is_midpoint() -> None:
     assert optimum_threshold(
         mu0_a=1e-6,
