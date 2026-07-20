@@ -129,12 +129,15 @@ def gaussian_mixture_ber_for_threshold(
     one_sigmas_v: np.ndarray,
     threshold_v: float,
     one_is_high: bool,
+    zero_weights: np.ndarray | None = None,
+    one_weights: np.ndarray | None = None,
 ) -> float:
     """Calculate equal-prior BER for pattern mixtures at a voltage threshold.
 
     Every pattern-conditioned component is Gaussian. Bit 0 and bit 1 receive
-    equal prior probability 0.5, independent of the finite PRBS balance; each
-    component within a bit value is weighted uniformly.
+    equal prior probability 0.5, independent of the finite PRBS balance.
+    Components within each bit value are uniform unless normalized positive
+    zero_weights and one_weights are provided.
     """
     zero_means, one_means, zero_sigmas, one_sigmas = _validated_mixture_arrays(
         zero_means_v,
@@ -148,6 +151,16 @@ def gaussian_mixture_ber_for_threshold(
     if not isinstance(one_is_high, bool):
         msg = "one_is_high must be a bool."
         raise ValueError(msg)
+    validated_zero_weights = _validated_mixture_weights(
+        zero_weights,
+        zero_means.size,
+        "zero_weights",
+    )
+    validated_one_weights = _validated_mixture_weights(
+        one_weights,
+        one_means.size,
+        "one_weights",
+    )
 
     polarity = 1.0 if one_is_high else -1.0
     threshold = polarity * threshold_v
@@ -159,6 +172,8 @@ def gaussian_mixture_ber_for_threshold(
         transformed_one,
         zero_sigmas,
         one_sigmas,
+        validated_zero_weights,
+        validated_one_weights,
     )[0]
     return float(np.exp(log_ber))
 
@@ -170,6 +185,8 @@ def optimize_gaussian_mixture_threshold(
     one_sigmas_v: np.ndarray,
     one_is_high: bool,
     grid_points: int = 1025,
+    zero_weights: np.ndarray | None = None,
+    one_weights: np.ndarray | None = None,
 ) -> tuple[float, float]:
     """Find a robust global-grid-plus-local optimum voltage threshold."""
     zero_means, one_means, zero_sigmas, one_sigmas = _validated_mixture_arrays(
@@ -187,6 +204,16 @@ def optimize_gaussian_mixture_threshold(
     if grid_points < 33:
         msg = "grid_points must be at least 33."
         raise ValueError(msg)
+    validated_zero_weights = _validated_mixture_weights(
+        zero_weights,
+        zero_means.size,
+        "zero_weights",
+    )
+    validated_one_weights = _validated_mixture_weights(
+        one_weights,
+        one_means.size,
+        "one_weights",
+    )
 
     polarity = 1.0 if one_is_high else -1.0
     transformed_zero = polarity * zero_means
@@ -205,6 +232,8 @@ def optimize_gaussian_mixture_threshold(
         transformed_one,
         zero_sigmas,
         one_sigmas,
+        validated_zero_weights,
+        validated_one_weights,
     )
     best_index = int(np.argmin(log_ber_grid))
 
@@ -226,6 +255,8 @@ def optimize_gaussian_mixture_threshold(
                     transformed_one,
                     zero_sigmas,
                     one_sigmas,
+                    validated_zero_weights,
+                    validated_one_weights,
                 )[0]
             ),
             bounds=(local_lower, local_upper),
@@ -242,6 +273,8 @@ def optimize_gaussian_mixture_threshold(
         one_sigmas,
         threshold_v,
         one_is_high,
+        zero_weights=validated_zero_weights,
+        one_weights=validated_one_weights,
     )
     return threshold_v, ber
 
@@ -481,25 +514,72 @@ def _transformed_mixture_log_ber_array(
     transformed_one_means: np.ndarray,
     zero_sigmas: np.ndarray,
     one_sigmas: np.ndarray,
+    zero_weights: np.ndarray,
+    one_weights: np.ndarray,
 ) -> np.ndarray:
     """Calculate natural-log mixture BER without Gaussian-tail underflow."""
-    threshold_column = np.asarray(thresholds, dtype=float)[:, np.newaxis]
-    log_error_zero = logsumexp(
-        log_ndtr(
-            -(threshold_column - transformed_zero_means) / zero_sigmas,
+    threshold_values = np.asarray(thresholds, dtype=float)
+    if threshold_values.ndim != 1 or threshold_values.size == 0:
+        msg = "thresholds must be a non-empty one-dimensional array."
+        raise ValueError(msg)
+    if not np.all(np.isfinite(threshold_values)):
+        msg = "thresholds must contain only finite values."
+        raise ValueError(msg)
+
+    maximum_components = max(zero_sigmas.size, one_sigmas.size)
+    maximum_temporary_elements = 2_000_000
+    chunk_size = max(
+        1,
+        min(
+            threshold_values.size,
+            maximum_temporary_elements // maximum_components,
         ),
-        axis=1,
-    ) - np.log(zero_sigmas.size)
-    log_error_one = logsumexp(
-        log_ndtr(
-            -(transformed_one_means - threshold_column) / one_sigmas,
-        ),
-        axis=1,
-    ) - np.log(one_sigmas.size)
-    return np.asarray(
-        logsumexp(np.vstack((log_error_zero, log_error_one)), axis=0) - np.log(2.0),
-        dtype=float,
     )
+    log_zero_weights = np.log(zero_weights)
+    log_one_weights = np.log(one_weights)
+    output = np.empty(threshold_values.size, dtype=float)
+    for start in range(0, threshold_values.size, chunk_size):
+        stop = min(start + chunk_size, threshold_values.size)
+        threshold_column = threshold_values[start:stop, np.newaxis]
+        log_error_zero = logsumexp(
+            log_ndtr(
+                -(threshold_column - transformed_zero_means) / zero_sigmas,
+            )
+            + log_zero_weights,
+            axis=1,
+        )
+        log_error_one = logsumexp(
+            log_ndtr(
+                -(transformed_one_means - threshold_column) / one_sigmas,
+            )
+            + log_one_weights,
+            axis=1,
+        )
+        output[start:stop] = logsumexp(
+            np.vstack((log_error_zero, log_error_one)), axis=0
+        ) - np.log(2.0)
+    return output
+
+
+def _validated_mixture_weights(
+    weights: np.ndarray | None,
+    expected_size: int,
+    name: str,
+) -> np.ndarray:
+    if weights is None:
+        uniform = np.full(expected_size, 1.0 / expected_size)
+        uniform.setflags(write=False)
+        return uniform
+    validated = readonly_float_array(weights, name)
+    if validated.size != expected_size:
+        msg = f"{name} length must match its mixture component count."
+        raise ValueError(msg)
+    if np.any(validated <= 0):
+        msg = f"{name} values must be positive."
+        raise ValueError(msg)
+    normalized = np.array(validated / np.sum(validated), copy=True)
+    normalized.setflags(write=False)
+    return normalized
 
 
 def _amplitude_axis(

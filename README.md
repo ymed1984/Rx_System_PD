@@ -323,6 +323,118 @@ The density is an analytic Gaussian mixture over the finite input pattern. It
 does not synthesize a random noisy waveform and does not include jitter, CDR,
 or optical-field dispersion.
 
+## Phase 3 Measured Complex-Response Integration
+
+Phase 3 replaces an analytic one-pole PD or TIA response with a complex
+frequency response while preserving the same physical signal and noise path:
+
+```text
+measured H_PD(f) [A/A] or Z_TIA(f) [V/A]
+  -> explicit DC/Nyquist coverage and phase/reference-plane validation
+  -> known pure-delay removal when requested
+  -> causal FIR plus pre-echo/tail-energy diagnostics
+  -> the same FIR for deterministic signal and noise-PSD propagation
+  -> deterministic eye, ENBW, and Gaussian-mixture BER comparison
+```
+
+Run the synthetic measured-like comparison:
+
+```bash
+uv run python examples/16_measured_response_statistical_eye.py
+uv run python examples/16_measured_response_statistical_eye.py --save
+```
+
+Use a calibrated CSV as follows:
+
+```text
+frequency_hz,magnitude_db,phase_deg
+0.0,63.5218,0.0
+...
+```
+
+```python
+from oma_ber.time_domain import (
+    fir_transfer_from_measured_response,
+    measured_frequency_response_from_csv,
+)
+
+measured_tia = measured_frequency_response_from_csv(
+    "tia_response.csv",
+    response_kind="transimpedance_ohm",
+    reference_plane="TIA input current -> TIA output voltage",
+)
+tia_transfer, diagnostics = fir_transfer_from_measured_response(
+    measured_tia,
+    sample_rate_hz=grid.sample_rate_hz,
+    fft_size=4096,
+    fir_length_samples=512,
+    removed_reference_delay_s=known_fixture_delay_s,
+)
+```
+
+`magnitude_db` is an amplitude quantity using `20*log10`: A/A for a
+dimensionless PD response and V/A for a TIA response. The Phase 3 API requires
+an explicit 0 Hz point and measured/modelled coverage through Nyquist. It does
+not silently hold the first or last value outside the supplied band.
+
+The converter does not move the largest impulse tap to time zero. It removes
+only `removed_reference_delay_s`, then rejects excessive negative-time
+`pre_echo_energy_ratio` or positive-time `discarded_tail_energy_ratio`. This
+keeps fixture-delay removal separate from physical precursors, reflections,
+and ringing.
+
+## Phase 4 Residual Timing Jitter and BER Bathtub
+
+Phase 4 treats timing error at the sampler after any external clock tracking.
+It does not infer CDR residual jitter from a loop bandwidth alone.
+
+```text
+nominal sampling phase phi0
+  + Gaussian residual RJ [s]
+  + random-phase sinusoidal residual jitter [s]
+  -> periodic fractional sampling with the intended bit label held fixed
+  -> one fixed voltage threshold per nominal phase
+  -> jitter-averaged Gaussian-mixture BER
+  -> BER bathtub and optimum nominal phase
+```
+
+Run the example:
+
+```bash
+uv run python examples/17_residual_jitter_bathtub.py
+uv run python examples/17_residual_jitter_bathtub.py --save
+```
+
+```python
+from oma_ber.time_domain import ResidualTimingJitter, analyze_jittered_tia_eye
+
+jittered = analyze_jittered_tia_eye(
+    waveforms,
+    noise,
+    ResidualTimingJitter(
+        random_jitter_rms_s=2.5e-12,
+        sinusoidal_jitter_peak_s=4.0e-12,
+    ),
+)
+
+print(jittered.random_jitter_rms_ui)
+print(jittered.sinusoidal_jitter_peak_ui)
+print(jittered.optimum_result.nominal_sampling_phase_ui)
+print(jittered.optimum_result.threshold_v)
+print(jittered.optimum_result.ber)
+```
+
+Gaussian RJ is integrated with Gauss-Hermite quadrature. A sinusoidal jitter
+with uniformly distributed phase is integrated with deterministic periodic
+quadrature. The voltage threshold is optimized after combining all timing
+nodes, so it cannot change with the instantaneous jitter value.
+
+`decision_delay_s` explicitly separates causal PD/TIA latency from the phase
+coordinate within one UI. A positive value moves the physical sample later;
+it does not alter or automatically recenter the waveform. Set it from a known
+receiver delay or a separately reported no-jitter phase alignment, and keep
+the same value when comparing the no-jitter and residual-jitter cases.
+
 ## Repository Layout
 
 ```text
@@ -345,7 +457,7 @@ src/oma_ber/
   wdm.py            per-wavelength WDM TX/fiber/RX level diagrams
   pd_analysis.py    receiver-boundary photodiode comparisons
   plotting.py       matplotlib plotting helpers
-  time_domain/      physical-unit PD/TIA waveform and statistical-eye path
+  time_domain/      physical-unit PD/TIA waveform, measured response, and eye path
 ```
 
 ## Units and Naming
@@ -400,6 +512,8 @@ uv run python examples/12_eye_diagram.py
 uv run python examples/13_tx_link_rx_level_diagram.py
 uv run python examples/14_physical_rx_eye.py
 uv run python examples/15_statistical_rx_eye.py
+uv run python examples/16_measured_response_statistical_eye.py
+uv run python examples/17_residual_jitter_bathtub.py
 ```
 
 Most examples print numerical results. Plotting examples may create figures or
@@ -419,9 +533,10 @@ uv run ruff check .
 ## Limitations
 
 - The main BER calculation assumes scalar Gaussian noise.
-- The `time_domain` Phase 2 path combines deterministic ISI with analytic
-  Gaussian noise moments and mixture BER. It does not generate random noise
-  samples or include jitter, CDR, bathtub curves, BER contours, or
+- The `time_domain` Phase 2/3 path combines deterministic ISI with analytic
+  Gaussian noise moments and mixture BER. Phase 4 adds residual RJ/SJ
+  quadrature and a BER bathtub. It does not generate random noise samples or
+  include a CDR loop, dual-Dirac extrapolation, BER contours, or
   standards-specific masks.
 - The older `waveform.py` / `isi.py` eye helpers accept arbitrary amplitude
   units and remain simplified compatibility aids. New receiver-eye work should
@@ -438,3 +553,6 @@ uv run ruff check .
 - WDM channels are evaluated independently. AWG crosstalk, inter-channel noise,
   fiber dispersion/nonlinearity, and aggregate WDM power effects are not yet
   modeled.
+- Phase 3 measured-response import is CSV amplitude/phase input. It does not
+  perform Touchstone reference-impedance conversion, fixture de-embedding,
+  passivity enforcement, or automatic non-causal response repair.

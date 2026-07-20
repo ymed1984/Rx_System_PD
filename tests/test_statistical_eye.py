@@ -76,6 +76,33 @@ def test_gaussian_mixture_threshold_remains_stable_when_ber_underflows() -> None
     assert ber == 0.0
 
 
+def test_weighted_gaussian_mixture_matches_replicated_components() -> None:
+    zero_means_v = np.array([0.0, 0.4])
+    one_means_v = np.array([1.0])
+    zero_sigmas_v = np.array([0.1, 0.1])
+    one_sigmas_v = np.array([0.1])
+
+    weighted_threshold_v, weighted_ber = optimize_gaussian_mixture_threshold(
+        zero_means_v,
+        one_means_v,
+        zero_sigmas_v,
+        one_sigmas_v,
+        one_is_high=True,
+        zero_weights=np.array([0.9, 0.1]),
+        one_weights=np.array([1.0]),
+    )
+    replicated_threshold_v, replicated_ber = optimize_gaussian_mixture_threshold(
+        np.array([0.0] * 9 + [0.4]),
+        np.array([1.0] * 10),
+        np.array([0.1] * 10),
+        np.array([0.1] * 10),
+        one_is_high=True,
+    )
+
+    assert weighted_threshold_v == pytest.approx(replicated_threshold_v)
+    assert weighted_ber == pytest.approx(replicated_ber)
+
+
 def test_flat_memoryless_statistical_eye_matches_scalar_level_model() -> None:
     time_grid = TimeGrid(10e9, 8)
     bits = prbs_bits(7, 127)

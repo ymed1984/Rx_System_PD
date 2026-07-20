@@ -8,7 +8,9 @@ from matplotlib.ticker import LogFormatterSciNotation
 
 from oma_ber.eye import eye_traces, eye_unit_interval_axis
 from oma_ber.time_domain.eye import DeterministicEyeAnalysis
+from oma_ber.time_domain.jitter import JitteredEyeAnalysis
 from oma_ber.time_domain.statistical import StatisticalEyeAnalysis
+from oma_ber.time_domain.transfer import DiscreteTransferFunction
 
 
 def _require_keys(sweep_results: list[dict], required_keys: set[str]) -> None:
@@ -305,6 +307,177 @@ def plot_statistical_ber_vs_phase(
     ax.set_ylabel("Optimized Gaussian-mixture BER")
     ax.set_xlim(0.0, 1.0)
     ax.grid(True, which="both", alpha=0.3)
+    return ax
+
+
+def plot_transfer_magnitude_comparison(
+    transfers: dict[str, DiscreteTransferFunction],
+    num_points: int = 1025,
+    maximum_frequency_hz: float | None = None,
+    normalize_to_dc: bool = True,
+    ax: Axes | None = None,
+) -> Axes:
+    """Compare discrete PD or TIA amplitude responses versus frequency.
+
+    All transfers must have the same sample rate and response kind. When
+    normalize_to_dc is true, each curve is divided by its own absolute DC gain.
+    Otherwise, transimpedance magnitude is displayed as 20*log10(|Z|/1 ohm)
+    and a dimensionless response as 20*log10(|H|).
+    """
+    if not transfers:
+        msg = "transfers must contain at least one response."
+        raise ValueError(msg)
+    if isinstance(num_points, bool) or not isinstance(num_points, int):
+        msg = "num_points must be an integer."
+        raise ValueError(msg)
+    if num_points < 2:
+        msg = "num_points must be at least 2."
+        raise ValueError(msg)
+    first_transfer = next(iter(transfers.values()))
+    if not isinstance(first_transfer, DiscreteTransferFunction):
+        msg = "all transfer values must be DiscreteTransferFunction instances."
+        raise ValueError(msg)
+    sample_rate_hz = first_transfer.sample_rate_hz
+    response_kind = first_transfer.response_kind
+    for name, transfer in transfers.items():
+        if not isinstance(name, str) or not name:
+            msg = "transfer labels must be non-empty strings."
+            raise ValueError(msg)
+        if not isinstance(transfer, DiscreteTransferFunction):
+            msg = "all transfer values must be DiscreteTransferFunction instances."
+            raise ValueError(msg)
+        if not np.isclose(transfer.sample_rate_hz, sample_rate_hz, rtol=1e-12):
+            msg = "all transfers must have the same sample_rate_hz."
+            raise ValueError(msg)
+        if transfer.response_kind != response_kind:
+            msg = "all transfers must have the same response_kind."
+            raise ValueError(msg)
+    if not isinstance(normalize_to_dc, bool):
+        msg = "normalize_to_dc must be a bool."
+        raise ValueError(msg)
+
+    nyquist_hz = sample_rate_hz / 2
+    resolved_maximum_hz = (
+        nyquist_hz if maximum_frequency_hz is None else maximum_frequency_hz
+    )
+    if (
+        not np.isfinite(resolved_maximum_hz)
+        or not 0 < resolved_maximum_hz <= nyquist_hz
+    ):
+        msg = "maximum_frequency_hz must be finite and in (0, Nyquist]."
+        raise ValueError(msg)
+    frequency_hz = np.linspace(0.0, resolved_maximum_hz, num_points)
+    z_inverse = np.exp(-1j * 2 * np.pi * frequency_hz / sample_rate_hz)
+
+    ax = _get_axes(ax)
+    for label, transfer in transfers.items():
+        numerator = np.polynomial.polynomial.polyval(z_inverse, transfer.numerator)
+        denominator = np.polynomial.polynomial.polyval(
+            z_inverse,
+            transfer.denominator,
+        )
+        magnitude = np.abs(numerator / denominator)
+        if normalize_to_dc:
+            magnitude = magnitude / abs(transfer.dc_gain)
+        magnitude_db = 20 * np.log10(np.maximum(magnitude, np.finfo(float).tiny))
+        ax.plot(frequency_hz * 1e-9, magnitude_db, label=label)
+
+    ax.set_xlabel("Frequency [GHz]")
+    if normalize_to_dc:
+        ax.set_ylabel("Magnitude relative to DC [dB]")
+    elif response_kind == "transimpedance_ohm":
+        ax.set_ylabel("Transimpedance magnitude [dBΩ re 1 Ω]")
+    else:
+        ax.set_ylabel("Magnitude [dB]")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    return ax
+
+
+def plot_statistical_ber_comparison(
+    analyses: dict[str, StatisticalEyeAnalysis],
+    ax: Axes | None = None,
+) -> Axes:
+    """Compare optimized Gaussian-mixture BER versus phase for RX cases."""
+    if not analyses:
+        msg = "analyses must contain at least one statistical eye result."
+        raise ValueError(msg)
+
+    ax = _get_axes(ax)
+    for label, analysis in analyses.items():
+        if not isinstance(label, str) or not label:
+            msg = "analysis labels must be non-empty strings."
+            raise ValueError(msg)
+        if not isinstance(analysis, StatisticalEyeAnalysis):
+            msg = "all analysis values must be StatisticalEyeAnalysis instances."
+            raise ValueError(msg)
+        phases = np.array(
+            [result.sampling_phase_ui for result in analysis.phase_results],
+            dtype=float,
+        )
+        ber_values = np.array(
+            [
+                max(result.ber, np.finfo(float).tiny)
+                for result in analysis.phase_results
+            ],
+            dtype=float,
+        )
+        ax.semilogy(phases, ber_values, marker="o", label=label)
+
+    ax.set_xlabel("Sampling phase [UI]")
+    ax.set_ylabel("Optimized Gaussian-mixture BER")
+    ax.set_xlim(0.0, 1.0)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend()
+    return ax
+
+
+def plot_jittered_ber_bathtub(
+    analysis: JitteredEyeAnalysis,
+    target_ber: float | None = None,
+    ax: Axes | None = None,
+) -> Axes:
+    """Plot fixed-threshold residual-jitter BER versus nominal phase."""
+    if not isinstance(analysis, JitteredEyeAnalysis):
+        msg = "analysis must be a JitteredEyeAnalysis."
+        raise ValueError(msg)
+    if target_ber is not None and (
+        not np.isfinite(target_ber) or not 0 < target_ber <= 0.5
+    ):
+        msg = "target_ber must be finite and in (0, 0.5] when provided."
+        raise ValueError(msg)
+
+    display_ber = np.maximum(analysis.jitter_averaged_ber, np.finfo(float).tiny)
+    optimum = analysis.optimum_result
+    ax = _get_axes(ax)
+    ax.semilogy(
+        analysis.nominal_phases_ui,
+        display_ber,
+        marker="o",
+        label="residual-jitter BER",
+    )
+    ax.semilogy(
+        [optimum.nominal_sampling_phase_ui],
+        [max(optimum.ber, np.finfo(float).tiny)],
+        marker="*",
+        markersize=11,
+        color="C3",
+        linestyle="none",
+        label="optimum",
+    )
+    if target_ber is not None:
+        ax.axhline(
+            target_ber,
+            color="black",
+            linestyle="--",
+            linewidth=1.0,
+            label="target BER",
+        )
+    ax.set_xlabel("Nominal sampling phase [UI]")
+    ax.set_ylabel("Jitter-averaged BER")
+    ax.set_xlim(0.0, 1.0)
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend()
     return ax
 
 

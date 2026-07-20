@@ -797,7 +797,171 @@ BERはこのQ近似からではなく、上記Gaussian-mixture BERを直接最�
 値です。規格適合性や極低BERの保証にはMonte Carlo、importance sampling、回路／
 光伝搬シミュレーション、実測との比較が別途必要です。
 
+### 10.16 Phase 3の実測複素応答統合
+
+Phase 3では、1次LPFの代わりにPD電流応答 `H_PD(f)` [A/A]またはTIA
+トランスインピーダンス `Z_TIA(f)` [V/A]を複素振幅応答として入力できます。
+
+```text
+frequency_hz,magnitude_db,phase_deg
+```
+
+振幅は光パワーdBではなく、電流／電圧の振幅dBです。
+
+```text
+H(f) = 10^(magnitude_db/20) * exp(j*phase_deg*pi/180)
+```
+
+新しい `measured_frequency_response_from_csv()` は、応答の単位種別と物理基準面も
+保持します。
+
+```text
+response_kind="dimensionless"        -> H_PD: A/A
+response_kind="transimpedance_ohm"   -> Z_TIA: V/A
+```
+
+実波形へ `irfft` 変換するには、0 HzとNyquistの応答が実数で、負周波数側が
+Hermitian共役となる必要があります。Phase 3経路はDC点を必須とし、入力上限が
+`sample_rate_hz/2` まで届かない応答を拒否します。DC以下や測定上限以上を暗黙に
+holdしません。
+
+既知の純遅延 `tau_removed` だけを次式で除去できます。
+
+```text
+H_deembedded(f)
+  = H_measured(f) * exp(+j*2*pi*f*tau_removed)
+```
+
+これは測定fixtureなどの既知遅延を取り除く操作です。最大インパルスtapを自動で
+0へ移動すると、実際のpre-cursorや反射を純遅延と誤認するため、自動移動は行い
+ません。
+
+複素応答は、振幅とunwrap位相をrFFTグリッドへ補間してから `irfft` します。
+
+```text
+f_k = k*fs/Nfft,  k=0 ... Nfft/2
+h_periodic[n] = irfft(H(f_k))
+```
+
+有限FFTでは周期末尾が負時間側に相当します。全energyに対する負時間energyと、
+採用FIR長より後ろの正時間tail energyを別々に評価します。
+
+```text
+E_total = sum_n |h_periodic[n]|^2
+
+pre_echo_energy_ratio
+  = E_negative_time / E_total
+
+discarded_tail_energy_ratio
+  = E_discarded_positive_time / E_total
+```
+
+どちらかが指定許容値を超える場合、`fir_transfer_from_measured_response()` は応答を
+自動修復せず `ValueError` を返します。測定のphase reference、除去遅延、FFT時間窓、
+FIR長のいずれが不足しているかを入力側で確認します。
+
+検証済みFIRは `DiscreteTransferFunction` となり、Phase 1/2と同じ経路へ入ります。
+
+```text
+deterministic signal mean  -> h[n]
+white-noise variance       -> h[n]^2
+lag-1 noise covariance     -> h[n]h[n+1]
+ENBW                        -> fs/2 * sum(h[n]^2)/|H(0)|^2
+```
+
+したがって、実測応答を信号Eyeだけへ使い、雑音帯域には別の1次LPFを使う不整合を
+避けられます。`MeasuredResponseDiagnostics` は、測定DC gain、FIR DC gain、その相対
+誤差、ENBW、低周波群遅延、pre-echo比、tail切捨て比を返します。
+
+Phase 3はCSVから直接A/AまたはV/Aが得られる場合を対象とします。S21から
+transimpedanceへのreference impedance変換、fixture de-embedding、passivity
+enforcement、非因果応答の修復は実装していません。
+
+### 10.17 Phase 4の残留タイミングジッタ
+
+Phase 4は、CDR後または外部で規定された、データEyeと判定クロックの間に残る時間
+誤差を扱います。シンボルkのサンプル時刻は、
+
+```text
+t_sample(k)
+  = k*T_UI + phi0*T_UI + decision_delay_s + delta_t
+```
+
+です。`phi0` はnominal sampling phase、`delta_t` は残留ジッタ [s]です。
+
+初期モデルはGaussian random jitterと、位相が一様な単一sinusoidal jitterです。
+
+```text
+delta_t,RJ ~ N(0, sigma_RJ^2)
+delta_t,SJ = A_SJ*sin(theta),  theta ~ Uniform(0, 2*pi)
+delta_t = delta_t,RJ + delta_t,SJ
+```
+
+独立なRJとSJの総RMS表示値は、
+
+```text
+sigma_total
+  = sqrt(sigma_RJ^2 + A_SJ^2/2)
+```
+
+です。秒からUIへの変換は `jitter_ui = jitter_s/T_UI` です。
+
+nominal phase `phi0` と固定電圧しきい値 `gamma` に対するBERは、Phase 2のパターン
+依存Gaussian-mixture BERを時間誤差分布について平均します。
+
+```text
+BER_J(gamma, phi0)
+  = integral BER(gamma, phi0 + delta_t/T_UI)
+             p(delta_t) d(delta_t)
+```
+
+実装ではGaussian RJをGauss-Hermite求積、SJの一様位相を周期中点求積で決定論的に
+積分します。RJとSJを同時指定した場合は積求積を使います。
+
+重要なのは、瞬時ジッタ値ごとにしきい値を再最適化しないことです。実受信器の電圧
+しきい値は各クロック揺らぎを知って追従できないため、各nominal phaseに対して
+全timing nodeに共通する1つのしきい値を選びます。
+
+```text
+gamma_opt(phi0) = argmin_gamma BER_J(gamma, phi0)
+phi_opt = argmin_phi0 BER_J(gamma_opt(phi0), phi0)
+```
+
+timing nodeとPRBS pattern componentは重み付きGaussian mixtureへまとめます。0/1の
+事前確率は各0.5のまま、timing nodeの重みは求積重み、同じbit内のpatternは等重み
+です。しきい値探索はPhase 2と同じlog-BER計算を使うため、極低BERでもtiming node
+間の順位を通常確率のunderflowで失いません。
+
+ジッタによって `phi < 0` または `phi >= 1` になっても、単純にbit labelを隣接bitへ
+付け替えません。
+
+```text
+decision target = bit[k]
+sample time may enter bit[k-1] or bit[k+1]
+```
+
+信号波形、雑音分散、lag-1共分散は有限PRBSの周期延長として補間しますが、判定対象
+は元の `bit[k]` に固定します。これにより、UI境界を越えたサンプルを誤って正解bit
+として数えることを防ぎます。
+
+`plot_jittered_ber_bathtub()` は、横軸nominal phase [UI]、縦軸jitter-averaged BERの
+bathtubを表示します。この曲線は各nominal phaseで固定電圧しきい値を最適化した
+結果です。
+
+因果的なPD/TIA応答には群遅延があるため、応答生成時刻を基準にしたままではEye中心
+が0.5 UIに現れるとは限りません。`decision_delay_s` は、この回路遅延と1 UI内の
+nominal phaseを明示的に分離する座標です。正値は物理サンプル時刻を後ろへ移動し、
+波形自体を自動で中央寄せしません。ジッタ有無を比較するときは同じ値を使い、既知
+回路遅延またはジッタなし解析で求めた位相整列値として別途報告します。
+
+Phase 4への入力はsamplerから見た残留ジッタです。CDR入力ジッタ、CDR tracking
+response、dual-Dirac DJ、DCD、data-dependent jitter、TJ@BER外挿は含みません。
+CDR前後を接続するには、次PhaseでジッタPSDとCDR誤差伝達関数を導入します。
+
 ## 11. 周波数応答／Sパラメータ補助機能
+
+11.1と11.2は従来の簡易互換経路です。物理単位、因果性、pre-echo、FIR切捨てを
+検証してPhase 2へ接続する場合は10.16の `oma_ber.time_domain` Phase 3経路を使います。
 
 ### 11.1 CSV形式
 

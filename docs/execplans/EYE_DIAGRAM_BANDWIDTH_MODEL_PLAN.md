@@ -38,9 +38,25 @@ Phase 2 is now implemented:
 - BER-aware voltage-threshold and sampling-phase optimization.
 - `examples/15_statistical_rx_eye.py`.
 
-Random noise waveform synthesis, jitter/CDR, complex optical-field
-propagation, BER contours, and measured-response causality/passivity handling
-remain future phases.
+Phase 3 is now implemented:
+
+- Physical CSV complex-response import for dimensionless PD current response
+  and TIA transimpedance [V/A].
+- Explicit DC/Nyquist coverage, known-delay removal, causality and FIR-tail
+  diagnostics.
+- Common measured FIR use for the deterministic signal and noise PSD paths.
+- `examples/16_measured_response_statistical_eye.py`.
+
+Phase 4 is now implemented:
+
+- Residual Gaussian RJ and random-phase sinusoidal jitter in seconds and UI.
+- Deterministic quadrature, periodic fractional sampling, and fixed bit labels.
+- One fixed BER-optimum voltage threshold per nominal sampling phase.
+- Jitter-averaged BER bathtub and `examples/17_residual_jitter_bathtub.py`.
+
+Random noise waveform synthesis, CDR transfer, complex optical-field
+propagation, BER contours, and measured-response passivity enforcement remain
+future phases.
 
 ## Current Status
 

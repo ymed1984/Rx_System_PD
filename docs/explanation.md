@@ -537,6 +537,99 @@ Phase 2はPD/TIAインパルス応答からlag-1共分散を求め、この式�
 スカラーOMAペナルティとして重ねると二重計上になります。Phase 2はランダム雑音
 波形を生成するMonte Carloではなく、有限パターンの解析的Gaussian mixtureです。
 
+### 13.9 Phase 3複素応答とBER最適化の接続
+
+Phase 3の測定応答は、信号平均と雑音分散へ同じFIRとして適用されます。PD応答
+`h_PD[n]` とTIA応答 `z_TIA[n]` の合成応答を、
+
+```text
+h_RX[n] = h_PD[n] * z_TIA[n]
+```
+
+とすると、パターン成分の決定論的平均は、入力電流波形との畳み込みです。
+
+```text
+mu_bj(phi) = sample_phi {i_pattern[n] * h_RX[n]}
+```
+
+PD以前で発生する白色雑音PSD `S_PD` の一定レベルに対するTIA出力分散は、
+
+```text
+sigma_PD^2
+  = S_PD * fs/2 * sum_n |h_RX[n]|^2
+```
+
+TIA入力換算雑音PSD `S_TIA` はTIA応答だけを使います。
+
+```text
+sigma_TIA^2
+  = S_TIA * fs/2 * sum_n |z_TIA[n]|^2
+```
+
+この `mu_bj(phi)` と `sigma_bj(phi)` が、13.6のGaussian-mixture BERへ直接渡され
+ます。したがって、1次LPFと実測応答でDC gainが同じでも、ringing、群遅延、
+pre/post-cursor ISI、ENBWが違えば、最適しきい値、最適位相、BERは変化します。
+
+FIRへ変換する前に既知の純遅延だけを除去できますが、最適位相を良く見せる目的で
+impulse peakを自動移動してはいけません。また、FIR切捨て後のDC gain誤差とenergy
+切捨て比を確認せず、測定応答のBERを確定値として扱ってはいけません。
+
+### 13.10 Phase 4の重み付きmixtureと固定しきい値
+
+Phase 4では、パターン成分jに加えてtiming quadrature node rを持つ分布を考えます。
+
+```text
+V | (b, j, r, phi0)
+  ~ N(mu_bjr(phi0), sigma_bjr(phi0)^2)
+
+mu_bjr(phi0)
+  = mu_bj(phi0 + delta_t,r/T_UI)
+```
+
+timing nodeの正規化重みを `w_r`、bit bに属するpattern数を `N_b` とすると、各成分
+の重みは `w_r/N_b` です。正極性TIAの固定しきい値BERは、
+
+```text
+BER_J(gamma, phi0) = 0.5 * [
+  sum_r w_r/N_0 * sum_j Q(
+    (gamma - mu_0jr(phi0))/sigma_0jr(phi0)
+  )
+  + sum_r w_r/N_1 * sum_j Q(
+    (mu_1jr(phi0) - gamma)/sigma_1jr(phi0)
+  )
+]
+```
+
+です。`optimize_gaussian_mixture_threshold()` は、従来の等重み成分に加えて、正の
+`zero_weights` と `one_weights` を受け取れるよう拡張されています。内部で各重みを
+正規化し、
+
+```text
+log(sum_k w_k Q(x_k))
+```
+
+を `log_ndtr` と `logsumexp` で評価します。大量のtiming×pattern成分で一時配列が
+過大にならないよう、しきい値軸をchunk分割します。
+
+各nominal phaseの `gamma` は全timing nodeを結合した後に1回だけ最適化します。
+
+```text
+min_gamma sum_r w_r BER_r(gamma)
+```
+
+は、
+
+```text
+sum_r w_r min_gamma BER_r(gamma)
+```
+
+とは異なります。後者は瞬時ジッタごとに受信しきい値を変更する非現実的な下限値
+なので採用しません。
+
+`decision_delay_s` はPD/TIAの因果遅延と1 UI内の位相座標を分離します。BER比較では
+ジッタなし／ありの双方へ同じ値を渡します。これは表示用の自動Eye中央寄せではなく、
+実際のサンプル時刻 `k*T_UI + phi0*T_UI + decision_delay_s + delta_t` の一部です。
+
 ## 14. TX/linkから最適しきい値までの実装データフロー
 
 ### 14.1 RX入力経路

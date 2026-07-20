@@ -16,8 +16,8 @@ Phase 2（現在の確定境界）
   -> Phase 7: 必要な場合のみ光電界・分散・chirp・WDM干渉へ拡張
 ```
 
-Phase 3以降は本ターンでは実装しません。次回作業は「9. 次回の実行手順」から開始
-します。
+Phase 3とPhase 4は実装済みです。次回はPhase 4の残留ジッタ出力を境界条件として、
+「6. Phase 5」のジッタPSDとCDR追従／残差伝達から進めます。
 
 ## 2. Phase 2の確定済みベースライン
 
@@ -304,16 +304,16 @@ docs/explanation.md
 ### 4.9 Phase 3の完了条件
 
 ```text
-[ ] 新APIが既存sparameters.py APIを破壊しない
-[ ] PDとTIAの単位が明示されている
-[ ] DCとNyquistに暗黙外挿がない
-[ ] pre-echoと切捨てenergyが数値化される
-[ ] 同じFIRが信号と雑音PSDへ適用される
-[ ] 1次LPFとの決定論的Eye、ENBW、BER比較が可能
-[ ] example 16がrepository rootから実行可能
-[ ] READMEと物理説明資料が更新されている
-[ ] uv run pytest が全件合格
-[ ] uv run ruff check . が合格
+[x] 新APIが既存sparameters.py APIを破壊しない
+[x] PDとTIAの単位が明示されている
+[x] DCとNyquistに暗黙外挿がない
+[x] pre-echoと切捨てenergyが数値化される
+[x] 同じFIRが信号と雑音PSDへ適用される
+[x] 1次LPFとの決定論的Eye、ENBW、BER比較が可能
+[x] example 16がrepository rootから実行可能
+[x] READMEと物理説明資料が更新されている
+[x] uv run pytest が全件合格（Phase 3完了時点: 298 tests）
+[x] uv run ruff check . が合格
 ```
 
 ## 5. Phase 4: 残留タイミングジッタとbathtub解析
@@ -431,6 +431,33 @@ sinusoidal_jitter_peak_ui
 
 Phase 4はbathtub曲線を提供しますが、規格固有のTJ@BER外挿やdual-Dirac準拠を主張
 しません。
+
+### 5.7 Phase 4実装状況
+
+次を実装済みです。
+
+- `ResidualTimingJitter` による残留RJ RMS [s]とSJ peak [s]入力。
+- Gauss-Hermite RJ求積と周期SJ位相求積。
+- UI境界を越える周期fractional samplingと固定bit label。
+- timing×patternの重み付きGaussian mixture。
+- nominal phaseごとに1つの固定電圧しきい値を使うBER最適化。
+- `JitteredEyeAnalysis` とBER bathtub。
+- `plot_jittered_ber_bathtub()`。
+- `examples/17_residual_jitter_bathtub.py`。
+
+Phase 4の完了チェックは次のとおりです。
+
+```text
+[x] RJ=0、SJ=0でPhase 2と一致
+[x] UI境界を越えても判定対象bit labelを保持
+[x] Gauss-Hermite点数とSJ位相点数の収束テスト
+[x] 反転TIAに対応
+[x] 瞬時ジッタごとにthresholdを変更しない
+[x] bathtub plottingとExample 17
+[x] bathtub中央より左右UI端でBERが悪化する回帰テスト
+[x] 全pytest合格（Phase 4完了時点: 310 tests）
+[x] ruff check合格
+```
 
 ## 6. Phase 5: ジッタPSDとCDR
 
@@ -551,7 +578,7 @@ i_PD(t) = Rpd |sum_channels E_k(t)|^2
 
 ## 9. 次回の実行手順
 
-次回「Phase 3を開始」と指示された場合は、次の順序で作業します。
+次回「Phase 5を開始」と指示された場合は、次の順序で作業します。
 
 ### Step 0: ベースライン固定
 
@@ -561,45 +588,45 @@ uv run pytest
 uv run ruff check .
 ```
 
-- Phase 2までの未コミット変更を破壊しない。
-- 既存の285テストが通ることを確認する。
-- Phase 3と無関係なdirty fileを変更しない。
+- Phase 4までの未コミット変更を破壊しない。
+- 既存の310テストが通ることを確認する。
+- Phase 5と無関係なdirty fileを変更しない。
 
-### Step 1: データ契約と検証
+### Step 1: ジッタPSDとCDR応答のデータ契約
 
-- `MeasuredFrequencyResponse` と `MeasuredResponseDiagnostics` を実装する。
-- CSV parserを追加する。
-- 単位、reference plane、0 Hz、Nyquist coverageのテストを先に作る。
+- `TimingJitterPsd` と `CdrJitterTransfer` を実装する。
+- 周波数 [Hz]、片側時間誤差PSD [s^2/Hz]、複素追従応答を明示する。
+- DC、厳密昇順、有限値、周波数範囲、補間範囲を先に検証する。
 
-### Step 2: FIR変換と診断
+### Step 2: CDR誤差伝達と残差積分
 
-- unwrap phase、既知遅延除去、rFFT grid補間、`irfft` を実装する。
-- pre-echoとtail energyを計算する。
-- synthetic flat／1次LPF／純遅延応答で検証する。
+- `H_error(f) = 1 - H_track(f)` を同じ周波数グリッドで評価する。
+- `|H_error(f)|^2*S_t,input(f)` を積分し、残留RJ RMS [s]を返す。
+- 低周波追従、高周波非追従、全追従／無追従の極限を検証する。
 
-### Step 3: Phase 1／2経路へ統合
+### Step 3: Phase 4への明示的な接続
 
-- FIRを `simulate_pd_tia_waveform()` へ渡す。
-- 同じFIRが `calculate_tia_output_noise()` に使われることを確認する。
-- deterministic Eye、ENBW、Gaussian-mixture BERを1次LPF参照と比較する。
+- PSD積分で得た残留RMSを `ResidualTimingJitter` へ渡す補助APIを追加する。
+- 入力PSD、残差PSD、積分帯域、残留RMS [s/UI]を結果へ保持する。
+- CDR入力ジッタとPhase 4入力の残留ジッタを同じ値として二重計上しない。
 
 ### Step 4: 可視化とexample
 
-- 1次LPFと実測／synthetic応答の周波数応答、Eye、BERを比較するplot helperを追加。
-- `examples/16_measured_response_statistical_eye.py` を追加。
-- 実測データがない場合は、example内でsynthetic responseを明示的に生成する。
+- 入力ジッタPSD、CDR追従／誤差伝達、残差PSDを比較するplot helperを追加する。
+- `examples/18_cdr_residual_jitter.py` を追加する。
+- 1次tracking LPFは近似モデルであり規格準拠CDRではないことを明記する。
 
 ### Step 5: 文書と全検証
 
-- READMEへ入力CSVと実行方法を追記する。
-- `docs/MechanismExplanation.md` へ因果性、位相、ENBWの式を追記する。
-- `docs/explanation.md` へしきい値／位相最適化との接続を追記する。
+- READMEへ入力PSDと実行方法を追記する。
+- `docs/MechanismExplanation.md` へCDR誤差伝達とPSD積分の式を追記する。
+- `docs/explanation.md` へPhase 4残留ジッタ入力との接続を追記する。
 - 次を実行する。
 
 ```bash
 uv run pytest
 uv run ruff check .
-uv run python examples/16_measured_response_statistical_eye.py
+uv run python examples/18_cdr_residual_jitter.py
 ```
 
 ## 10. 実装時のレビュー項目
@@ -652,10 +679,7 @@ ExecPlanへ入力契約と合格基準を追記してから実装します。
 
 ## 12. 最終的な推奨
 
-次の実装はPhase 3の実測複素応答統合から開始します。ジッタを先行させず、まず
-信号勾配、群遅延、ringing、ENBWを同じ応答で確定させることが、PDスペックが
-システムEyeとBERへ与える寄与を物理的に追跡する最短経路です。
-
-その後、Phase 4でCDR後残留ジッタによるbathtubを解析し、Phase 5でジッタPSDと
-CDR追従を接続します。この順序により、1次LPF、実測応答、残留ジッタ、CDRの効果を
-個別に比較でき、同じペナルティの二重計上を避けられます。
+Phase 3の実測複素応答統合とPhase 4のCDR後残留ジッタbathtubは完了しました。
+次はPhase 5でジッタPSDとCDR追従を接続します。入力ジッタPSDから残差PSDと残留RMS
+を求め、その値だけをPhase 4へ渡すことで、CDR効果と残留ジッタを二重計上せず、
+1次LPF、実測応答、残留ジッタ、CDRの寄与を個別に比較できます。

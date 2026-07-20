@@ -10,15 +10,20 @@ import pytest
 from oma_ber.plotting import (
     plot_deterministic_eye_analysis,
     plot_eye_diagram,
+    plot_jittered_ber_bathtub,
     plot_oma_sweep,
     plot_q_vs_oma,
     plot_required_oma_vs_responsivity,
+    plot_statistical_ber_comparison,
     plot_statistical_ber_vs_phase,
     plot_statistical_eye_density,
+    plot_transfer_magnitude_comparison,
 )
 from oma_ber.time_domain import (
     TimeDomainNoiseModel,
     TimeGrid,
+    ResidualTimingJitter,
+    analyze_jittered_tia_eye,
     analyze_deterministic_eye,
     analyze_statistical_tia_eye,
     calculate_tia_output_noise,
@@ -148,6 +153,79 @@ def test_statistical_eye_plot_helpers_show_density_and_ber_phase() -> None:
     assert "BER" in ber_ax.get_ylabel()
     plt.close(density_ax.figure)
     plt.close(ber_ax.figure)
+
+
+def test_phase3_plot_helpers_compare_transfer_and_statistical_ber() -> None:
+    time_grid = TimeGrid(10e9, 8)
+    bits = np.array([0, 1, 1, 0, 1, 0] * 8)
+    pd = Photodiode(0.8, 1e-9)
+    flat_pd = identity_transfer(time_grid.sample_rate_hz)
+    tia = identity_transfer(
+        time_grid.sample_rate_hz,
+        dc_gain=1e3,
+        response_kind="transimpedance_ohm",
+    )
+    waveforms = simulate_pd_tia_waveform(
+        bits,
+        2e-6,
+        8e-6,
+        time_grid,
+        pd,
+        pd_current_response=flat_pd,
+        tia_transimpedance_response=tia,
+    )
+    noise = calculate_tia_output_noise(waveforms, TimeDomainNoiseModel(10e-12))
+    analysis = analyze_statistical_tia_eye(waveforms, noise)
+
+    response_ax = plot_transfer_magnitude_comparison(
+        {"baseline": flat_pd, "candidate": identity_transfer(time_grid.sample_rate_hz)},
+        maximum_frequency_hz=30e9,
+    )
+    ber_ax = plot_statistical_ber_comparison(
+        {"baseline": analysis, "candidate": analysis}
+    )
+
+    assert "Frequency [GHz]" == response_ax.get_xlabel()
+    assert "relative to DC" in response_ax.get_ylabel()
+    assert len(response_ax.lines) == 2
+    assert ber_ax.get_yscale() == "log"
+    assert len(ber_ax.lines) == 2
+    plt.close(response_ax.figure)
+    plt.close(ber_ax.figure)
+
+
+def test_phase4_plot_helper_shows_jitter_bathtub() -> None:
+    time_grid = TimeGrid(10e9, 8)
+    bits = np.array([0, 1, 1, 0, 1, 0] * 8)
+    pd = Photodiode(0.8, 1e-9)
+    tia = identity_transfer(
+        time_grid.sample_rate_hz,
+        dc_gain=1e3,
+        response_kind="transimpedance_ohm",
+    )
+    waveforms = simulate_pd_tia_waveform(
+        bits,
+        2e-6,
+        8e-6,
+        time_grid,
+        pd,
+        tia_transimpedance_response=tia,
+    )
+    noise = calculate_tia_output_noise(waveforms, TimeDomainNoiseModel(10e-12))
+    analysis = analyze_jittered_tia_eye(
+        waveforms,
+        noise,
+        ResidualTimingJitter(),
+        threshold_grid_points=129,
+    )
+
+    ax = plot_jittered_ber_bathtub(analysis, target_ber=0.2)
+
+    assert ax.get_yscale() == "log"
+    assert "Nominal" in ax.get_xlabel()
+    assert "Jitter-averaged" in ax.get_ylabel()
+    assert len(ax.lines) == 3
+    plt.close(ax.figure)
 
 
 def test_plot_helpers_use_provided_axes() -> None:
